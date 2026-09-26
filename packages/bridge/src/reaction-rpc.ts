@@ -146,20 +146,9 @@ export class ReactionRpc {
     return this._custom.get(id) ?? this._aliases.get(id)
   }
 
-  /**
-   * Reaction policy of one conversation, as Telegram's full-chat payload needs.
-   *
-   * The catalog is account-wide, so `available` alone cannot express a platform
-   * that keeps reactions out of some conversation kinds. `supported` carries
-   * that decision, and an unsupported conversation reports `chatReactionsNone`.
-   */
-  chatReactions(
-    conversationId: string,
-    context?: IMReactionContext,
-    supported = true,
-  ): tl.TypeChatReactions {
+  chatReactions(conversationId: string, context?: IMReactionContext): tl.TypeChatReactions {
     this.registerContext(conversationId, context)
-    if (!supported || !context?.available.length) return { _: 'chatReactionsNone' }
+    if (!context?.available.length) return { _: 'chatReactionsNone' }
     return {
       _: 'chatReactionsSome',
       reactions: context.available.map((definition) => this.toTlReaction(conversationId, definition)),

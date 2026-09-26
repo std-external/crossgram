@@ -9,8 +9,7 @@ import {
   type IMMedia, type IMMediaInput, type IMMediaUploadProbe,
   type IMEvent, type IMMessage, type IMMessageInput, type IMMessageServiceAction, type IMPlatform, type IMReactionActor, type IMReactionContext,
   type IMReactionDefinition, type IMReactionSummary, type IMServiceMember, type IMTextEntity, type IMTransferProgress, type IMUser,
-  type IMConversationKind, type IMProjectableMessage, type IMConversationMemberModeration, type JsonValue,
-  type PlatformSession,
+  type IMProjectableMessage, type IMConversationMemberModeration, type JsonValue, type PlatformSession,
 } from './platform.js'
 import { qqMessageSequenceFromMetadata, qqReplySequenceFromMetadata } from './message-id.js'
 import { jsonEquals } from './stable-json.js'
@@ -218,19 +217,6 @@ export interface CrossgramFeatures {
   poke?: {
     /** Largest burst one `crossgram.sendPoke` call may send. */
     maxCount: number
-  }
-  /**
-   * Reaction support of the requested conversation.
-   *
-   * A platform advertises reactions account-wide, but may keep some conversation
-   * kinds out of it: QQ has no reactions in one-to-one chats. A client that
-   * follows its own peer rules would still offer the entry there, so the answer
-   * is resolved per conversation. Official Telegram servers reject the whole
-   * method, which keeps the caller's own rules in place.
-   */
-  reactions?: {
-    /** Whether the requested conversation accepts reactions at all. */
-    supported: boolean
   }
 }
 
@@ -1498,9 +1484,7 @@ export class DialogRpc {
         readInboxMaxId: 0, readOutboxMaxId: 0, unreadCount: 0,
         chatPhoto: { _: 'photoEmpty', id: Long.ZERO },
         notifySettings: await this._peerNotifySettings(conversation.id), botInfo: [], pts,
-        availableReactions: this._reactions?.chatReactions(
-          conversation.id, reactionContext, this._reactionsSupported(conversation.kind),
-        ),
+        availableReactions: this._reactions?.chatReactions(conversation.id, reactionContext),
       },
       chats: [this._makeChat(conversation)], users: [this._makeSelfUser()],
     }
@@ -2565,30 +2549,14 @@ export class DialogRpc {
   async getFeatures(req: GetFeaturesRequest): Promise<tl.RawDataJSON> {
     const features: CrossgramFeatures = {}
     const poke = this._platform.capabilities.poke
-    const reactions = this._platform.capabilities.reactions
-    if (((poke && poke.maxCount > 0) || reactions) && req.peer) {
+    if (poke && poke.maxCount > 0 && req.peer) {
       await this._hydratePeers()
       const conversationId = this._resolvePeer(req.peer)
-      const conversation = this._conversation(conversationId)
-      if (poke && poke.maxCount > 0) {
-        const supported = conversation.kind !== 'channel'
-          && !(await this._systemPeers?.resolve(this._session, conversationId))
-        if (supported) features.poke = { maxCount: poke.maxCount }
-      }
-      if (reactions) features.reactions = { supported: this._reactionsSupported(conversation.kind) }
+      const supported = this._conversation(conversationId).kind !== 'channel'
+        && !(await this._systemPeers?.resolve(this._session, conversationId))
+      if (supported) features.poke = { maxCount: poke.maxCount }
     }
     return featuresJSON(features)
-  }
-
-  /**
-   * Whether the platform accepts reactions in this kind of conversation.
-   *
-   * A platform advertises reactions account-wide, so a kind its capability does
-   * not list stays out of everything published for that conversation.
-   */
-  private _reactionsSupported(kind: IMConversationKind): boolean {
-    const kinds = this._platform.capabilities.reactions?.kinds
-    return !kinds || kinds.includes(kind)
   }
 
   /**
@@ -2844,11 +2812,6 @@ export class DialogRpc {
     await this._hydratePeers()
     const peerId = this._resolvePeer(req.peer)
     this._assertWritableConversation(peerId)
-    // A platform can keep reactions out of a conversation kind even though it
-    // accepts them account-wide; QQ does that for one-to-one chats.
-    if (!this._reactionsSupported(this._conversation(peerId).kind)) {
-      throw new RpcError(400, 'REACTION_INVALID')
-    }
     const projected = await this._store?.findProjectedByTlId(
       this._session.platformSessionId, req.msgId, peerId,
     )
