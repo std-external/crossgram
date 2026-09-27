@@ -435,4 +435,20 @@ describe('group auto kick', () => {
 
     expect(kicks[0]!.action).toEqual({ type: 'kick', rejectAddRequest: true })
   })
+
+  it('can leave members without a relayed message alone', async () => {
+    const { runner } = await fixture({
+      total: 2000,
+      members: [{ id: 'u_silent' }, { id: 'u_old' }, { id: 'u_new' }],
+      messages: [
+        { userId: 'u_old', timestamp: 1_700_000_000 },
+        { userId: 'u_new', timestamp: 1_800_000_000 },
+      ],
+      config: { groups: [{ conversationId: GROUP_CODE, unknownLastSpoke: 'newest' }] },
+    })
+
+    const [result] = await runner.run('test')
+
+    expect(result.planned.map((item) => item.userId)).toEqual(['u_old', 'u_new', 'u_silent'])
+  })
 })

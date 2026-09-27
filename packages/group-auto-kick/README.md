@@ -52,6 +52,7 @@
 | `targetMembers` | `1995` | 一轮踢人后要降到的人数，必须小于 `maxMembers`。 |
 | `maxKicksPerRound` | `10` | 单轮最多踢出多少人。 |
 | `protectAdministrators` | `true` | 保护管理员；群主始终受保护。 |
+| `unknownLastSpoke` | `oldest` | relay 记录中从未发言的成员如何排序：`oldest` 视为最久未发言（优先踢出），`newest` 排在所有有记录的人之后，只踢“可测量的最久未发言”。 |
 | `rejectAddRequest` | `false` | 踢出时同时拒绝对方再次加群。 |
 
 ### 全局字段

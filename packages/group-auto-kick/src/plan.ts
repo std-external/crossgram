@@ -60,11 +60,23 @@ export interface KickCandidate {
   lastSpokeAt: number
 }
 
+/**
+ * Where members the relay never saw speak belong.
+ *
+ * `oldest` (default) ranks them as the longest silence: nothing outranks a
+ * member who never spoke at all. `newest` keeps them out of the way and only
+ * removes members whose measured silence is real, which also protects members
+ * that joined too recently to have spoken yet.
+ */
+export type UnknownLastSpoke = 'oldest' | 'newest'
+
 export interface RankOptions {
   /** Account the bridge itself is logged in as; never a kick target. */
   selfUserId?: string
   /** Administrators are protected by default. The owner always is. */
   protectAdministrators?: boolean
+  /** Ranking of members without a relayed message; defaults to `oldest`. */
+  unknownLastSpoke?: UnknownLastSpoke
 }
 
 /** Members ordered from the longest silence to the most recent speaker. */
@@ -75,6 +87,7 @@ export function rankSilentMembers(
 ): KickCandidate[] {
   const protectedRoles = new Set<IMConversationRole>(['owner'])
   if (options.protectAdministrators !== false) protectedRoles.add('administrator')
+  const unknownsLast = options.unknownLastSpoke === 'newest'
   const ranked: KickCandidate[] = []
   for (const member of members) {
     const userId = member.user?.id
@@ -88,8 +101,15 @@ export function rankSilentMembers(
       lastSpokeAt: lastSpokeAt.get(userId) ?? 0,
     })
   }
-  return ranked.sort((left, right) =>
-    left.lastSpokeAt - right.lastSpokeAt || left.userId.localeCompare(right.userId))
+  return ranked.sort((left, right) => {
+    if (left.lastSpokeAt !== right.lastSpokeAt) {
+      if (unknownsLast && (!left.lastSpokeAt || !right.lastSpokeAt)) {
+        return left.lastSpokeAt ? -1 : 1
+      }
+      return left.lastSpokeAt - right.lastSpokeAt
+    }
+    return left.userId.localeCompare(right.userId)
+  })
 }
 
 export interface KickBudget {

@@ -10,6 +10,7 @@ import {
   planKicks,
   rankSilentMembers,
   type KickCandidate,
+  type UnknownLastSpoke,
 } from './plan.js'
 
 export * from './plan.js'
@@ -37,6 +38,11 @@ export interface GroupRule {
   maxKicksPerRound?: number
   /** Protect administrators as well as the owner. */
   protectAdministrators?: boolean
+  /**
+   * Ranking of members the relay never saw speak: `oldest` (default) removes
+   * them first, `newest` removes only members whose silence was measured.
+   */
+  unknownLastSpoke?: UnknownLastSpoke
   /** Ask the platform to refuse future join requests from a removed member. */
   rejectAddRequest?: boolean
 }
@@ -77,6 +83,8 @@ export const Config: z<Config> = z.object({
       .description('单轮最多踢出多少人。'),
     protectAdministrators: z.boolean().default(true)
       .description('保护管理员（群主始终受保护）。'),
+    unknownLastSpoke: z.union([z.const('oldest'), z.const('newest')]).default('oldest')
+      .description('relay 记录中从未发言的成员排序：oldest 视为最久未发言（默认），newest 排在最后。'),
     rejectAddRequest: z.boolean().default(false)
       .description('同时拒绝被踢成员再次加群。'),
   })).default([]),
@@ -113,6 +121,7 @@ const DEFAULTS = {
   maxMembers: 2000,
   targetMembers: 1995,
   maxKicksPerRound: 10,
+  unknownLastSpoke: 'oldest',
 } as const
 
 export interface GroupAutoKickResult {
@@ -308,6 +317,7 @@ export class GroupAutoKickRunner {
     const ranked = rankSilentMembers(scan.members, ranking, {
       selfUserId: session.userId,
       protectAdministrators: rule.protectAdministrators ?? true,
+      unknownLastSpoke: rule.unknownLastSpoke ?? DEFAULTS.unknownLastSpoke,
     })
     const planned = planKicks(ranked, { total, targetMembers, maxKicksPerRound })
 

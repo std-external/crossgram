@@ -98,6 +98,17 @@ describe('rankSilentMembers', () => {
     const ranked = rankSilentMembers([member('u_b'), member('u_a')], new Map())
     expect(ranked.map((item) => item.userId)).toEqual(['u_a', 'u_b'])
   })
+
+  it('can rank members the relay never saw speak last', () => {
+    const ranked = rankSilentMembers(
+      [member('u_silent'), member('u_old'), member('u_new')],
+      new Map([['u_old', 1_700_000_000], ['u_new', 1_800_000_000]]),
+      { unknownLastSpoke: 'newest' },
+    )
+
+    expect(ranked.map((item) => [item.userId, item.lastSpokeAt]))
+      .toEqual([['u_old', 1_700_000_000], ['u_new', 1_800_000_000], ['u_silent', 0]])
+  })
 })
 
 describe('kickBudget', () => {
