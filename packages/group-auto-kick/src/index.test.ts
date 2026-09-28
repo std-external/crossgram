@@ -404,6 +404,29 @@ describe('group auto kick', () => {
     expect(kicks).toHaveLength(2)
   })
 
+  it('reports a removal the platform rejected at error level', async () => {
+    const { ctx, runner } = await fixture({
+      total: 2000,
+      members: [{ id: 'u_a' }],
+      kickError: () => new Error('kick rejected'),
+    })
+    const messages: Array<{ type: string, args: unknown[] }> = []
+    ctx.logger.exporter({
+      export: (message: { type: string, args: unknown[] }) => {
+        messages.push({ type: message.type, args: message.args })
+      },
+    })
+
+    const [result] = await runner.run('test')
+
+    expect(result.failures).toEqual([{ userId: 'u_a', error: 'kick rejected' }])
+    // The production console exporter drops `warn`, so failures must be `error`.
+    expect(messages).toContainEqual({
+      type: 'error',
+      args: expect.arrayContaining([expect.stringContaining('踢出')]),
+    })
+  })
+
   it('reuses the cached ranking until it is invalidated', async () => {
     const { ctx, runner } = await fixture({
       total: 2000,

@@ -170,7 +170,7 @@ declare module 'cordis' {
 
 export function apply(ctx: Context, config: Config = {}): void {
   const logger = ctx.logger('group-auto-kick')
-  const rules = normalizeRules(config, (message) => logger.warn('%s', message))
+  const rules = normalizeRules(config, (message) => logger.error('%s', message))
   if (!rules.length) {
     logger.info('未配置任何群，插件保持空闲')
     return
@@ -186,7 +186,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (pending !== undefined) return
     pending = setTimeout(() => {
       pending = undefined
-      void runner.run(reason).catch((error) => logger.warn('巡检失败：%s', errorText(error)))
+      void runner.run(reason).catch((error) => logger.error('巡检失败：%s', errorText(error)))
     }, delay)
     unref(pending)
   }
@@ -234,7 +234,7 @@ export class GroupAutoKickRunner {
   /** One round over every configured group; concurrent calls are ignored. */
   async run(reason = 'manual'): Promise<GroupAutoKickResult[]> {
     if (this.running || this.disposed) return []
-    const rules = normalizeRules(this.config, (message) => this.logger.warn('%s', message))
+    const rules = normalizeRules(this.config, (message) => this.logger.error('%s', message))
     if (!rules.length) return []
     this.running = true
     const results: GroupAutoKickResult[] = []
@@ -271,7 +271,7 @@ export class GroupAutoKickRunner {
       const key = `${session.platformSessionId}\0${ruleKey(rule)}`
       if (!this.unresolved.has(key)) {
         this.unresolved.add(key)
-        this.logger.warn(
+        this.logger.error(
           '未在会话 %s 中找到群 %s，该规则保持等待',
           session.platformSessionId, ruleKey(rule),
         )
@@ -291,7 +291,7 @@ export class GroupAutoKickRunner {
     const targetMembers = rule.targetMembers ?? DEFAULTS.targetMembers
     const maxKicksPerRound = rule.maxKicksPerRound ?? DEFAULTS.maxKicksPerRound
     if (!(targetMembers < maxMembers)) {
-      this.logger.warn(
+      this.logger.error(
         '群 %s 的配置无效：targetMembers(%d) 必须小于 maxMembers(%d)',
         title, targetMembers, maxMembers,
       )
@@ -309,7 +309,7 @@ export class GroupAutoKickRunner {
     }
     scan ??= await this.scanMembers(platform, session, conversation.platformConversationId)
     if (!scan.members.length) {
-      this.logger.warn('群 %s 的成员列表为空，跳过本轮', title)
+      this.logger.error('群 %s 的成员列表为空，跳过本轮', title)
       return emptyResult(rule, reason, { ...context, skipped: 'scan-failed', total })
     }
 
@@ -345,10 +345,18 @@ export class GroupAutoKickRunner {
           this.logger.info('已踢出 %s（最后发言：%s）', label, lastSpoke)
         } catch (error) {
           failures.push({ userId: candidate.userId, error: errorText(error) })
-          this.logger.warn('踢出 %s 失败：%s', label, errorText(error))
+          // The production console exporter drops `warn`, so a removal that the
+          // platform rejected has to be reported at error level to be visible.
+          this.logger.error('踢出 %s 失败：%s', label, errorText(error))
         }
       }
       if (kickIntervalMs > 0 && index < planned.length - 1) await delay(kickIntervalMs)
+    }
+    if (!context.dryRun && planned.length) {
+      this.logger.info(
+        '群 %s：本轮踢出 %d/%d 人%s',
+        title, kicked.length, planned.length, failures.length ? `，${failures.length} 人失败` : '',
+      )
     }
 
     return {
@@ -391,7 +399,7 @@ export class GroupAutoKickRunner {
       const total = Number(page.total)
       return Number.isFinite(total) && total >= 0 ? total : undefined
     } catch (error) {
-      this.logger.warn('读取群 %s 人数失败：%s', conversationId, errorText(error))
+      this.logger.error('读取群 %s 人数失败：%s', conversationId, errorText(error))
       return undefined
     }
   }
@@ -437,7 +445,7 @@ export class GroupAutoKickRunner {
         }
       }
     } catch (error) {
-      this.logger.warn('扫描群 %s 成员失败：%s', conversationId, errorText(error))
+      this.logger.error('扫描群 %s 成员失败：%s', conversationId, errorText(error))
       return { members, partial: true }
     }
     return { members, partial }
