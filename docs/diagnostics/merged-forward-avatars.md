@@ -52,7 +52,8 @@ Relay (`packages/merged-forward`, `packages/bridge`,
 - The projection now registers a peer photo per synthetic sender
   (`userProfilePhoto`) and per transcript chat (`chatPhoto`) from the avatar
   media it already received, plus a Telegram `photo` for the card thumbnail
-  and the full-chat profile. All three share one photo id
+  (dropped again on 2026-09-29, see below) and the full-chat profile. All three
+  share one photo id
   (`stableId('avatar:<media id>')`, the id the relay already uses for relayed
   users) and the data centre of the bridge plugin
   (`MtprotoBridgeService.dcId`), so clients fetch them from the same place as
@@ -93,12 +94,11 @@ and resolves the username with the prefix it matched.
   avatar per message instead of an initials circle.
 - Telegram Desktop draws per-sender avatars only in comment threads and
   monoforum bars, never for group messages, so there the visible result is the
-  transcript's own photo in the top bar (and in the chat's profile), plus the
-  card thumbnail.
-- Both clients render a web page photo beside the title for a
-  `telegram_message` preview; `WebPageData::computeDefaultSmallMedia`
-  (Telegram Desktop) keeps it a small square for this type instead of a full
-  width attachment.
+  transcript's own photo in the top bar (and in the chat's profile).
+- The card carries no photo since the follow-up below. A web page photo of a
+  `telegram_message` preview is a full-width banner in Telegram Android, while
+  `WebPageData::computeDefaultSmallMedia` (Telegram Desktop) keeps it a small
+  square for this type, so the two clients disagreed about the same card.
 
 ## Verification
 
@@ -175,6 +175,37 @@ bridge release all four downloads were the same complete 971-byte default
 avatar.  The archived face URL is also part of the participant fingerprint
 now, so a transcript that gained real avatars hands out new photo ids and
 clients do not keep showing the placeholder they cached earlier.
+
+## Card thumbnails dropped (2026-09-29)
+
+The card photo the fix above added turned out to be a client-dependent eyesore:
+Telegram Android treats a `telegram_message` web page as an instant view card
+and draws its photo as a full-width banner above the title
+(`ChatMessageCell.measureTime` only keeps a photo small when the page is not an
+instant view or the type is in its small list, which `telegram_message` is
+not), so the avatar of the archived conversation occupied most of the merged
+forward bubble.  Telegram Desktop renders the same page as an article
+(`WebPageData::computeDefaultSmallMedia()` is true for a photo of
+`WebPageType::Message` without a document) and shrinks it to a thumbnail, so
+the two clients never showed the same card.
+
+`MergedForwardProjection.makePreview` therefore takes no avatar and sets no
+photo, and the `project` waterfall no longer resolves the bundle avatar for the
+card.  The avatar stays part of the transcript: `makeChat`, `makeBundleUser`
+and `makeFullChat` register the same archived media, and `upload.getFile` keeps
+serving it for `inputPeerPhotoFileLocation` and `inputPhotoFileLocation`.
+
+Verified by:
+
+- `packages/merged-forward/src/index.test.ts` and `avatars.test.ts` assert the
+  card web page carries no photo while the synthetic chat keeps its
+  `chatPhoto`;
+- `packages/merged-forward/src/projection-rpc.e2e.test.ts` still serves the
+  transcript chat and sender avatars over the RPC surface, asserts the card web
+  page photo is undefined, and downloads the full-chat profile photo through
+  `inputPhotoFileLocation`;
+- `packages/test-suite/src/login.e2e.test.ts` repeats both over a real MTProto
+  socket.
 
 ## Follow-ups
 

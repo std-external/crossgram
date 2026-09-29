@@ -165,11 +165,7 @@ export class MergedForwardProjection {
       part.type === 'media' || part.type === 'sticker' || part.type === 'card')) {
       const record = this.resolve(input.session.platformSessionId, bundleChatId(bundles[0].bundle))
       if (record) {
-        input.draft.media = this.makePreview(
-          record,
-          targets.get(bundles[0].bundle.id),
-          await this.loadAvatar(input, record),
-        )
+        input.draft.media = this.makePreview(record, targets.get(bundles[0].bundle.id))
       }
     }
     return next()
@@ -194,10 +190,17 @@ export class MergedForwardProjection {
     }
   }
 
+  /**
+   * Card of the merged forward.  It deliberately carries no photo: Telegram
+   * Android renders the photo of a `telegram_message` web page as a full-width
+   * banner above the title, so the archived chat avatar used to turn the card
+   * into a group portrait that occupied most of the bubble and that Telegram
+   * Desktop never showed at that size.  The transcript still carries that
+   * avatar on its own chat entity, where clients draw it as a peer photo.
+   */
   makePreview(
     record: BundleRecord,
     messageId?: number,
-    avatar?: IMMedia<any>,
   ): tl.RawMessageMediaWebPage {
     const url = this.makeLink(record, messageId)
     return {
@@ -210,11 +213,6 @@ export class MergedForwardProjection {
         // Without archived content the card shows only its title: never a
         // placeholder sentence that pretends to be a preview.
         description: record.bundle.preview?.trim() || undefined,
-        // Telegram clients render a webpage photo beside the title, which is
-        // where the merged forward shows the avatar of the chat it came from.
-        photo: avatar
-          ? this.makeBundlePhoto(record.platformSessionId, record.chatId, avatar)
-          : undefined,
       },
     }
   }

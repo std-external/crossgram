@@ -284,7 +284,7 @@ describe('merged-forward projection and RPC e2e', () => {
     if (!projectedUser) throw new Error('bundle sender was not projected')
 
     // Avatars reach clients through the file routes only, so the transcript
-    // and the card thumbnail have to serve the adapter bytes themselves.
+    // has to serve the adapter bytes itself.
     await expect(ctx.mtproto.dispatch(rpc, {
       _: 'upload.getFile', precise: false, cdnSupported: false, offset: 0, limit: 64,
       location: {
@@ -305,16 +305,27 @@ describe('merged-forward projection and RPC e2e', () => {
     } as never)).resolves.toMatchObject({
       _: 'upload.file', bytes: new TextEncoder().encode('avata'),
     })
-    const cardPhoto = projectedOuter.media?._ === 'messageMediaWebPage'
-      ? projectedOuter.media.webpage.photo
+    // The card itself stays imageless: a `telegram_message` web page photo is
+    // what Telegram Android blows up into a full-width banner over the bubble.
+    const card = projectedOuter.media?._ === 'messageMediaWebPage'
+      ? projectedOuter.media.webpage
       : undefined
-    if (!cardPhoto || cardPhoto._ !== 'photo') throw new Error('card thumbnail was not projected')
-    expect(cardPhoto.id.toString()).toBe(chatPhotoId.toString())
+    expect(card?._ === 'webPage' ? card.photo : undefined).toBeUndefined()
+    // The transcript profile still hands out the same bytes as a `photo`, which
+    // clients address by photo location instead of by peer.
+    const fullChat = await ctx.mtproto.dispatch(rpc, {
+      _: 'messages.getFullChat', chatId,
+    } as never) as tl.messages.RawChatFull
+    if (fullChat.fullChat._ !== 'chatFull' || fullChat.fullChat.chatPhoto._ !== 'photo') {
+      throw new Error('full chat profile photo was not projected')
+    }
+    const profilePhoto = fullChat.fullChat.chatPhoto
+    expect(profilePhoto.id.toString()).toBe(chatPhotoId.toString())
     await expect(ctx.mtproto.dispatch(rpc, {
       _: 'upload.getFile', precise: false, cdnSupported: false, offset: 0, limit: 64,
       location: {
-        _: 'inputPhotoFileLocation', id: cardPhoto.id, accessHash: cardPhoto.accessHash,
-        fileReference: cardPhoto.fileReference, thumbSize: 'x',
+        _: 'inputPhotoFileLocation', id: profilePhoto.id, accessHash: profilePhoto.accessHash,
+        fileReference: profilePhoto.fileReference, thumbSize: 'x',
       },
     } as never)).resolves.toMatchObject({
       _: 'upload.file', bytes: new TextEncoder().encode('bundle-avatar-bytes'),

@@ -72,6 +72,11 @@ describe('merged-forward projection', () => {
         description: bundle.preview,
       },
     })
+    // A `telegram_message` card never carries an image: Telegram Android would
+    // draw it as a full-width banner above the title.
+    const card = projection.makePreview(record).webpage
+    if (card._ !== 'webPage') throw new Error('merged-forward preview is not a web page')
+    expect(card.photo).toBeUndefined()
     expect(projection.makeChat(record)).toMatchObject({
       _: 'chat', left: true, id: chatId, title: bundle.title,
     })

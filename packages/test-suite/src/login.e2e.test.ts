@@ -3941,17 +3941,24 @@ describe('bridge login e2e', () => {
         },
       }, 61)
       expect(new TextDecoder().decode(transcriptChatAvatar.bytes)).toBe('bundle-avatar-bytes')
-      const outerCardPhoto = preview.media?.webpage?.photo
-      expect(outerCardPhoto?._).toBe('photo')
-      const cardThumbnail = await callRpc(fresh, key, freshSid, {
+      // The card carries no image at all: a `telegram_message` web page photo
+      // is a full-width banner in Telegram Android, so the archived chat
+      // avatar stays on the transcript peer only.
+      expect(preview.media?.webpage?.photo).toBeUndefined()
+      const fullChat = await callRpc(fresh, key, freshSid, {
+        _: 'messages.getFullChat', chatId: outerChat.id,
+      }, 62)
+      const fullChatPhoto = fullChat.fullChat?.chatPhoto
+      expect(fullChatPhoto?._).toBe('photo')
+      const profilePhoto = await callRpc(fresh, key, freshSid, {
         _: 'upload.getFile', precise: false, cdnSupported: false, offset: 0, limit: 64,
         location: {
-          _: 'inputPhotoFileLocation', id: outerCardPhoto.id,
-          accessHash: outerCardPhoto.accessHash,
-          fileReference: outerCardPhoto.fileReference, thumbSize: 'x',
+          _: 'inputPhotoFileLocation', id: fullChatPhoto.id,
+          accessHash: fullChatPhoto.accessHash,
+          fileReference: fullChatPhoto.fileReference, thumbSize: 'x',
         },
-      }, 62)
-      expect(new TextDecoder().decode(cardThumbnail.bytes)).toBe('bundle-avatar-bytes')
+      }, 63)
+      expect(new TextDecoder().decode(profilePhoto.bytes)).toBe('bundle-avatar-bytes')
       const nestedPreview = outerHistory.messages.find((message: any) => message.message === '查看聊天记录')
       const innerChat = outerHistory.chats.find((chat: any) => chat.title === innerBundle.title)
       const innerUrl = new RegExp('^https://t\\.me/bridgebundle_' + innerChat.id + '/[1-9][0-9]*$')

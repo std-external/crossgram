@@ -96,7 +96,7 @@ describe('merged-forward avatars', () => {
     })).toBeUndefined()
   })
 
-  it('gives the synthetic chat and its card the archived chat avatar', async () => {
+  it('gives the synthetic chat the archived chat avatar and keeps it off the card', async () => {
     const adapter = platform(media('avatar:group:1234:original-v1', { width: 640, height: 640 }))
     const projection = makeMergedForwardProvider(2)
     const record = projection.remember(session.platformSessionId, bundle)
@@ -112,21 +112,14 @@ describe('merged-forward avatars', () => {
       photoId,
     })?.media).toBe(avatar)
 
-    const preview = projection.makePreview(record, 42, avatar)
-    expect(preview.webpage.photo).toMatchObject({
-      _: 'photo', id: photoId, dcId: 2,
-      sizes: [
-        { _: 'photoSize', type: 'm', w: 640, h: 640 },
-        { _: 'photoSize', type: 'x', w: 640, h: 640 },
-      ],
+    // The card never carries the avatar: Telegram Android draws the photo of a
+    // `telegram_message` web page as a full-width banner over the whole bubble.
+    const preview = projection.makePreview(record, 42)
+    expect(preview.webpage).toMatchObject({
+      _: 'webPage', url: `https://t.me/bridgebundle_${record.chatId}/42`,
     })
-    const photo = preview.webpage.photo!
-    if (photo._ !== 'photo') throw new Error('preview photo missing')
-    expect(projection.resolveAvatarLocation(session.platformSessionId, {
-      _: 'inputPhotoFileLocation',
-      id: photo.id, accessHash: photo.accessHash,
-      fileReference: photo.fileReference, thumbSize: 'x',
-    })?.media).toBe(avatar)
+    if (preview.webpage._ !== 'webPage') throw new Error('preview is not a web page')
+    expect(preview.webpage.photo).toBeUndefined()
   })
 
   it('loads the bundle avatar once and tolerates adapters without the hook', async () => {
