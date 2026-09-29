@@ -422,7 +422,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@cordisjs/plugin-database@npm:^4.1.1":
+"@cordisjs/plugin-database@npm:^4.0.0, @cordisjs/plugin-database@npm:^4.1.1":
   version: 4.1.1
   resolution: "@cordisjs/plugin-database@npm:4.1.1"
   dependencies:
@@ -1899,6 +1899,18 @@ __metadata:
     vitest: "npm:^4.1.10"
   peerDependencies:
     cordis: ^4.0.0-rc.7
+  languageName: unknown
+  linkType: soft
+
+"@mtproto-relay/group-auto-kick@workspace:packages/group-auto-kick":
+  version: 0.0.0-use.local
+  resolution: "@mtproto-relay/group-auto-kick@workspace:packages/group-auto-kick"
+  dependencies:
+    "@cordisjs/plugin-database": "npm:^4.0.0"
+    "@mtproto-relay/bridge": "workspace:*"
+    schemastery: "npm:^3.18.0"
+  peerDependencies:
+    cordis: ^4.0.0-rc.5
   languageName: unknown
   linkType: soft
 
