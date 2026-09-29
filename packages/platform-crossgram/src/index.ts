@@ -23,6 +23,7 @@ import { QQVoiceMedia } from './voice-media.js'
 import { QQBridgePcmTransport } from './qq-bridge-pcm-transport.js'
 import { defineLegacyQQMediaSchema } from './legacy-media-schema.js'
 import { defineQQMediaPreviewModel, mediaPreviewKey, QQMediaPreviewer } from './media-preview.js'
+import { extractRemoteVideoFrame, type RemoteVideoFrameExtractor } from './video-frame.js'
 import { migrateLegacyQQMessageMedia } from './raw-media-migration.js'
 import { migrateLegacyQQGroupAliasUsers } from './user-name-migration.js'
 import type {
@@ -248,6 +249,8 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
   >()
   private readonly inlinePreviewMessageJobs = new Map<string, Promise<void>>()
   private readonly inlinePreviewPublished = new Set<string>()
+  /** Reads a video's first frame from its direct URL; replaceable in tests. */
+  videoFrameReader: RemoteVideoFrameExtractor = (url, signal) => extractRemoteVideoFrame(url, signal)
 
   constructor(
     options: Config = {},
@@ -2026,9 +2029,9 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
   ): void {
     if (!this.mediaPreviews.enabled) return
     const keys = message.content.parts.flatMap((part) => part.type === 'media'
-      && ((part.media.kind === 'image' && part.media.locator)
-        || (part.media.mimeType?.toLowerCase().startsWith('video/')
-          && part.media.locator && part.media.preview))
+      && part.media.locator
+      && (part.media.kind === 'image' || isVideoFramePreviewCandidate(part.media)
+        || (isVideoMime(part.media.mimeType) && part.media.preview))
       && !part.media.strippedThumbnail
       ? [mediaPreviewKey(part.media.locator)]
       : [])
@@ -2065,10 +2068,23 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
     let changed = false
     const parts = await Promise.all(message.content.parts.map(async (part) => {
       if (part.type !== 'media' || !part.media.locator || part.media.strippedThumbnail
-        || (part.media.kind !== 'image'
-          && !part.media.mimeType?.toLowerCase().startsWith('video/'))
-        || (part.media.kind === 'file' && !part.media.preview)) return part
+        || (part.media.kind !== 'image' && !isVideoMime(part.media.mimeType))) return part
       try {
+        if (part.media.kind === 'file' && !part.media.preview) {
+          if (!isVideoFramePreviewCandidate(part.media)) return part
+          // No native thumbnail reached the bridge (QQ file transfers never
+          // carry one). Decode the first frame from QQ's CDN instead so the
+          // bubble shows the video rather than a black loading square.
+          const locator = rawQQMediaLocator(part.media.locator)
+          const media = await this.mediaPreviews.prepareVideoFrame(
+            part.media,
+            async (signal) => (await this.client.resolveFileUrl(locator, signal)).url,
+            this.videoFrameReader,
+          )
+          if (media === part.media) return part
+          changed = true
+          return { ...part, media }
+        }
         const previewLocator = part.media.preview?.locator
         const sourceLocator = previewLocator?.kind === 'image' && previewLocator.originImageUrl
           ? { ...previewLocator, filePath: undefined, fileSize: undefined, imageSpec: 198 as const }
@@ -2634,6 +2650,16 @@ function mapMedia(input: WireMedia): IMMedia<QQMediaLocator> {
     preview: input.preview,
     locator: input.locator,
   }
+}
+
+function isVideoMime(mimeType: string | undefined): boolean {
+  return mimeType?.toLowerCase().startsWith('video/') === true
+}
+
+/** Videos without a native thumbnail whose first frame QQ's CDN can serve. */
+function isVideoFramePreviewCandidate(media: IMMedia<QQMediaLocator>): boolean {
+  return media.kind === 'file' && !media.preview && !media.voice && isVideoMime(media.mimeType)
+    && Boolean(media.locator?.fileUuid) && !media.locator?.deferred
 }
 
 function fileVideoMimeType(name: string | undefined): string | undefined {

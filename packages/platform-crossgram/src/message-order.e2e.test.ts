@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'node:http'
+import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +14,7 @@ import sharp from 'sharp'
 import Long from 'long'
 import type { tl } from '@mtcute/core'
 import {
-  MessageStore, PlatformRegistry, StickerRpc, UpdateManager,
+  expandTelegramStrippedThumbnail, MessageStore, PlatformRegistry, StickerRpc, UpdateManager,
   type IMConversation, type IMMessage, type IngestResult, type PlatformSession, type Unsubscribe,
 } from '@mtproto-relay/bridge'
 import { DialogRpc, makeTlMessageMedia, stableId } from '../../bridge/src/dialogs.js'
@@ -1287,6 +1289,176 @@ describe('QQNT file-sent video E2E', () => {
         fileName: 'FILE-SENT.MP4', fileUuid: 'file-video-uuid', file10MMd5: 'file-video-prefix-md5',
       }])
       expect(ranges).toEqual(['bytes=2-5'])
+    } finally {
+      await unsubscribe()
+    }
+  })
+
+  it('replaces the black loading square with a CDN first-frame preview and real layout size', async () => {
+    const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
+    const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+      const child = spawn(ffmpeg, args, { stdio: 'ignore', windowsHide: true })
+      child.once('error', reject)
+      child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`)))
+    })
+    try {
+      await run(['-version'])
+    } catch {
+      return
+    }
+    const directory = await mkdtemp(join(tmpdir(), 'qqnt-video-frame-e2e-'))
+    temporaryDirectories.push(directory)
+    const videoPath = join(directory, 'QQ20260929-210506.mp4')
+    // Tail-indexed (no faststart) like the production QQ file-transfer clip.
+    await run([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc2=s=784x442:r=30:d=2',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', videoPath,
+    ])
+    const file = await readFile(videoPath)
+
+    const ctx = new Context()
+    const fibers = [
+      ctx.plugin(Database),
+      ctx.plugin(SQLiteDriver, { path: ':memory:' }),
+    ]
+    await Promise.all(fibers)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    defineModels(ctx)
+    defineQQMediaPreviewModel(ctx)
+    await ctx.database.prepared()
+    disposals.push(async () => {
+      for (const fiber of fibers.reverse()) await Promise.resolve((fiber as any).dispose?.())
+    })
+
+    let directUrlRequests = 0
+    let cdnBytes = 0
+    let server: Server | undefined
+    const webSocketServer = new WebSocketServer({ noServer: true })
+    server = createServer(async (request, response) => {
+      if (request.method === 'POST' && request.url === '/v1/files/direct-url') {
+        directUrlRequests++
+        for await (const _chunk of request) { /* drain */ }
+        const address = server!.address() as AddressInfo
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          url: `http://127.0.0.1:${address.port}/qqdownloadftnv5?fname=clip`,
+          expiresAt: Date.now() + 60_000,
+        }))
+        return
+      }
+      if (request.method === 'GET' && request.url?.startsWith('/qqdownloadftnv5')) {
+        const match = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? '')
+        const start = match ? Number(match[1]) : 0
+        const end = match?.[2] ? Math.min(Number(match[2]), file.length - 1) : file.length - 1
+        const body = file.subarray(start, end + 1)
+        response.writeHead(match ? 206 : 200, {
+          'accept-ranges': 'bytes', 'content-length': body.length, 'content-type': 'video/mp4',
+          ...(match ? { 'content-range': `bytes ${start}-${end}/${file.length}` } : {}),
+        })
+        cdnBytes += body.length
+        response.end(body)
+        return
+      }
+      response.writeHead(404).end('not found')
+    })
+    server.on('upgrade', (request, socket, head) => {
+      webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+        webSocketServer.emit('connection', webSocket, request)
+      })
+    })
+    webSocketServer.on('connection', (webSocket) => {
+      webSocket.send(JSON.stringify({
+        id: 'frame-video-event',
+        event: {
+          type: 'message',
+          conversation: {
+            id: 'frame-video-friend', kind: 'private', title: 'Friend',
+            peerUid: 'u_friend', peerUin: '10000', chatType: 1,
+          },
+          message: {
+            id: 'frame-video-message', conversationId: 'frame-video-friend', senderId: 'friend',
+            timestamp: 1_800_000_200, outgoing: false,
+            parts: [{
+              type: 'media',
+              media: {
+                id: 'frame-video', kind: 'file', name: 'QQ20260929-210506.mp4', size: file.length,
+                locator: {
+                  messageId: 'frame-video-message', elementId: 'frame-video', chatType: 1,
+                  peerUid: 'u_friend', kind: 'file', fileName: 'QQ20260929-210506.mp4', filePath: '',
+                  fileUuid: 'frame-video-uuid', file10MMd5: 'frame-video-prefix-md5',
+                },
+              },
+            }],
+          },
+        },
+      }))
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address() as AddressInfo
+    disposals.push(async () => {
+      for (const client of webSocketServer.clients) client.terminate()
+      webSocketServer.close()
+      if (!server?.listening) return
+      const closed = new Promise<void>((resolve, reject) => {
+        server!.close((error) => error ? reject(error) : resolve())
+      })
+      server.closeAllConnections()
+      await closed
+    })
+
+    const previewer = new QQMediaPreviewer({ enabled: true, database: ctx.database })
+    const platform = new QQNTPlatform({
+      endpoint: `http://127.0.0.1:${address.port}/v1`,
+      webSocketEndpoint: `ws://127.0.0.1:${address.port}/events`,
+      generatePreviews: true,
+    }, 'qqnt:stickers', previewer)
+    platform.client.getReactionCatalog = vi.fn(async () => ({ available: [], reactions: [], maxSelected: 20 }))
+    platform.client.getDialogs = vi.fn(async () => ({ conversations: [] }))
+    const store = new MessageStore(ctx.database)
+    const ingested = Promise.withResolvers<IngestResult>()
+    const edited = Promise.withResolvers<IngestResult>()
+    const unsubscribe = await platform.subscribe(session, async (event) => {
+      if (event.type === 'message') ingested.resolve(await store.ingest(session, event.conversation, event.message))
+      if (event.type === 'message-edit') edited.resolve(await store.ingest(session, event.conversation, event.message))
+    })
+    const timeout = <T>(promise: Promise<T>, label: string) => Promise.race([
+      promise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), 20_000)),
+    ])
+    try {
+      const first = await timeout(ingested.promise, 'live video message')
+      const mediaId = first.projection[0].mediaId!
+      const [initialRow] = await ctx.database.get('mtproto_im_media', { id: mediaId })
+      // Before the frame arrives the client only has the 1x1 placeholder.
+      expect(makeTlMessageMedia(initialRow!, 1_800_000_200)).toMatchObject({
+        document: {
+          thumbs: undefined,
+          attributes: expect.arrayContaining([expect.objectContaining({ _: 'documentAttributeVideo', w: 1, h: 1 })]),
+        },
+      })
+
+      const second = await timeout(edited.promise, 'frame preview edit')
+      expect(second.projection[0].mediaId).toBe(mediaId)
+      const [readyRow] = await ctx.database.get('mtproto_im_media', { id: mediaId })
+      expect(readyRow).toMatchObject({ width: 784, height: 442, duration: 2 })
+      const projected = makeTlMessageMedia(readyRow!, 1_800_000_200)
+      if (projected._ !== 'messageMediaDocument' || projected.document?._ !== 'document') {
+        throw new Error('expected projected video document')
+      }
+      expect(projected.document.thumbs).toMatchObject([{ _: 'photoStrippedSize', type: 'i' }])
+      expect(projected.document.attributes).toEqual(expect.arrayContaining([expect.objectContaining({
+        _: 'documentAttributeVideo', supportsStreaming: true, duration: 2, w: 784, h: 442,
+      })]))
+      const stripped = (projected.document.thumbs![0] as tl.RawPhotoStrippedSize).bytes
+      await expect(sharp(expandTelegramStrippedThumbnail(stripped)).metadata())
+        .resolves.toMatchObject({ format: 'jpeg', width: 40, height: 22 })
+      expect(await ctx.database.get('mtproto_qqnt_inline_preview', {})).toMatchObject([
+        { width: 784, height: 442, duration: 2 },
+      ])
+      expect(directUrlRequests).toBe(1)
+      expect(cdnBytes).toBeGreaterThan(0)
     } finally {
       await unsubscribe()
     }

@@ -3122,6 +3122,94 @@ describe('QQNTPlatform mapping', () => {
     await unsubscribe()
   })
 
+  it('decodes the first CDN frame for QQ file-transfer videos that carry no thumbnail', async () => {
+    const platform = new QQNTPlatform({ generatePreviews: true })
+    const frame = await sharp({
+      create: { width: 1568, height: 882, channels: 3, background: { r: 200, g: 40, b: 40 } },
+    }).jpeg().toBuffer()
+    const wireMessage = {
+      id: 'transfer-video', conversationId: '1:friend', senderId: 'friend', timestamp: 1, outgoing: false,
+      parts: [{
+        type: 'media' as const,
+        media: {
+          id: 'transfer-video-media', kind: 'file' as const, name: 'QQ20260929-210506.mp4', size: 857_325,
+          locator: {
+            messageId: 'transfer-video', elementId: 'transfer-video-media', chatType: 1 as const,
+            peerUid: 'friend', kind: 'file' as const, fileName: 'QQ20260929-210506.mp4', filePath: '',
+            fileUuid: 'transfer-uuid', fileSubId: 'sub', file10MMd5: 'e9206f1cfd0919164662ef1041ac34de',
+          },
+        },
+      }],
+    }
+    platform.client.getReactionCatalog = vi.fn(async () => ({ available: [], reactions: [], maxSelected: 20 }))
+    platform.client.getHistory = vi.fn(async () => ({ messages: [wireMessage] }))
+    platform.client.getDialogs = vi.fn(async () => ({ conversations: [] }))
+    platform.client.downloadFile = vi.fn(async function* () {
+      throw new Error('a file-transfer video must not be downloaded for its preview')
+    })
+    platform.client.resolveFileUrl = vi.fn(async () => ({
+      url: 'http://cdn.example.test/qqdownloadftnv5?fname=clip', expiresAt: Date.now() + 60_000,
+    }))
+    const readFrame = vi.fn(async () => ({ bytes: new Uint8Array(frame), duration: 7.6 }))
+    platform.videoFrameReader = readFrame
+    platform.client.subscribe = vi.fn(async (_handler, signal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    const edited = Promise.withResolvers<any>()
+    const unsubscribe = await platform.subscribe(session, (event) => {
+      if (event.type === 'message-edit') edited.resolve(event)
+    })
+
+    const history = await platform.getHistory(session, { id: '1:friend' })
+    const original = (history.messages[0].content.parts[0] as any).media as IMMedia<QQMediaLocator>
+    expect(original).toMatchObject({ kind: 'file', mimeType: 'video/mp4' })
+    expect(original.width).toBeUndefined()
+    expect(original.strippedThumbnail).toBeUndefined()
+
+    const update = await edited.promise
+    const media = update.message.content.parts[0].media as IMMedia<QQMediaLocator>
+    expect(platform.client.resolveFileUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ fileUuid: 'transfer-uuid', file10MMd5: 'e9206f1cfd0919164662ef1041ac34de' }),
+      undefined,
+    )
+    expect(readFrame).toHaveBeenCalledWith('http://cdn.example.test/qqdownloadftnv5?fname=clip', undefined)
+    expect(platform.client.downloadFile).not.toHaveBeenCalled()
+    expect(media).toMatchObject({ width: 1568, height: 882, duration: 8 })
+    await expect(sharp(expandTelegramStrippedThumbnail(media.strippedThumbnail!)).metadata()).resolves.toMatchObject({
+      format: 'jpeg', width: 40, height: 22,
+    })
+
+    // A later history page maps the same video with the cached preview inline.
+    const again = await platform.getHistory(session, { id: '1:friend' })
+    expect((again.messages[0].content.parts[0] as any).media).toMatchObject({
+      width: 1568, height: 882, duration: 8, strippedThumbnail: media.strippedThumbnail,
+    })
+    expect(readFrame).toHaveBeenCalledTimes(1)
+    await unsubscribe()
+  })
+
+  it('leaves non-video QQ files without a frame preview', async () => {
+    const platform = new QQNTPlatform({ generatePreviews: true })
+    platform.client.getReactionCatalog = vi.fn(async () => ({ available: [], reactions: [], maxSelected: 20 }))
+    platform.client.getHistory = vi.fn(async () => ({ messages: [{
+      id: 'archive', conversationId: '2:group', senderId: 'alice', timestamp: 1, outgoing: false,
+      parts: [{ type: 'media' as const, media: {
+        id: 'archive-media', kind: 'file' as const, name: 'notes.zip', size: 10,
+        locator: {
+          messageId: 'archive', elementId: 'archive-media', chatType: 2 as const, peerUid: 'group',
+          kind: 'file' as const, fileName: 'notes.zip', fileUuid: 'zip-uuid',
+        },
+      } }],
+    }] }))
+    platform.client.resolveFileUrl = vi.fn()
+    const readFrame = vi.fn()
+    platform.videoFrameReader = readFrame
+    await platform.getHistory(session, { id: '2:group' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(platform.client.resolveFileUrl).not.toHaveBeenCalled()
+    expect(readFrame).not.toHaveBeenCalled()
+  })
+
   it('publishes live and historical GIF images as the same untouched QQ asset', async () => {
     const platform = new QQNTPlatform()
     const gif = await sharp({
