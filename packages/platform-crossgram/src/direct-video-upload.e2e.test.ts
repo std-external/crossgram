@@ -139,4 +139,69 @@ describe('QQNT direct playable-video upload E2E', () => {
       uploadedMedia: [{ kind: 'video', fileUuid: 'video-uuid' }],
     })
   })
+
+  it('sends QQ raw SHA-1 states for every full MiB of a multi-block video', async () => {
+    const mib = 1024 * 1024
+    const video = Buffer.alloc(2 * mib + mib / 2)
+    for (let index = 0; index < video.length; index++) video[index] = (index * 7 + 3) % 256
+    // Reference values from an independent SHA-1 compressor: states after 1 and
+    // 2 MiB (h0..h4 little-endian, no padding), then the normal whole-file digest.
+    const expected = [
+      'bc92149b0ce9d856ab29eb0a92f3e63e43355e67',
+      '29d3a11d3780c46c9e1034ece2c4b0602855568b',
+      createHash('sha1').update(video).digest('hex'),
+    ]
+    expect(expected[2]).toBe('7e8bf07de0da858f4a95e1d259fb3ea8286be099')
+    let preparedRequest: Record<string, any> | undefined
+    let sentManifest: Record<string, any> | undefined
+    server = createServer(async (request, response) => {
+      if (request.url === '/v1/status') {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ protocolVersion: 24, ready: true }))
+        return
+      }
+      if (request.url === '/v1/uploads/prepare') {
+        preparedRequest = JSON.parse((await collect(request)).toString())
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          prepared: { kind: 'video', fileUuid: 'stored-video', msgInfo: Buffer.from('m').toString('base64url') },
+        }))
+        return
+      }
+      if (request.url === '/v1/messages') {
+        const encoded = request.headers['x-qqnt-manifest']
+        if (typeof encoded === 'string') sentManifest = JSON.parse(Buffer.from(encoded, 'base64url').toString())
+        await collect(request)
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          id: 'sent-video', conversationId: '2:group', senderId: 'self', timestamp: 1, outgoing: true, parts: [],
+        }))
+        return
+      }
+      response.writeHead(404).end()
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing address')
+    const client = new QQNTClient({
+      endpoint: `http://127.0.0.1:${address.port}/v1`,
+      videoThumbnail: async () => ({ bytes: Buffer.of(1), width: 1, height: 1 }),
+    })
+
+    await client.sendMessage('2:group', undefined, [{
+      kind: 'file', name: 'long.mp4', mimeType: 'video/mp4',
+      source: {
+        size: video.length,
+        async *stream() {
+          for (let offset = 0; offset < video.length; offset += 700_001) {
+            yield video.subarray(offset, offset + 700_001)
+          }
+        },
+      },
+    }])
+
+    expect(preparedRequest?.media.sha1Checkpoints).toEqual(expected)
+    expect(sentManifest?.media[0].sha1Checkpoints).toEqual(expected)
+  })
 })

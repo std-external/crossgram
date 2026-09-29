@@ -18,6 +18,7 @@ import type {
   WireFlashTransferManifest, WireFlashTransferResult, WireReactionAssetMeta, WireStickerAssetMeta, WireTextPart,
 } from './protocol.js'
 import { QQHighwayUploadWriter, uploadHighway, type QQMediaUploadPlan } from './highway.js'
+import { Sha1CompressionState } from './sha1-state.js'
 
 export interface QQNTClientOptions {
   endpoint?: string
@@ -1799,6 +1800,7 @@ async function hashMediaSource(
   const md5 = createHash('md5')
   const sha1 = createHash('sha1')
   const sha1Checkpoints = cumulativeSha1 ? [] as string[] : undefined
+  const sha1State = cumulativeSha1 ? new Sha1CompressionState() : undefined
   const first10M = createHash('md5')
   const first10MLimit = 10 * 1024 * 1024
   let size = 0
@@ -1808,19 +1810,19 @@ async function hashMediaSource(
     if (signal?.aborted) throw signal.reason ?? new Error('upload aborted')
     size += chunk.length
     md5.update(chunk)
-    if (sha1Checkpoints) {
+    sha1.update(chunk)
+    if (sha1Checkpoints && sha1State) {
       for (let offset = 0; offset < chunk.length;) {
         const length = Math.min(chunk.length - offset, QQ_VIDEO_SHA1_CHECKPOINT_BYTES - sha1Bytes)
-        sha1.update(chunk.subarray(offset, offset + length))
+        sha1State.update(chunk.subarray(offset, offset + length))
         offset += length
         sha1Bytes += length
         if (sha1Bytes === QQ_VIDEO_SHA1_CHECKPOINT_BYTES) {
-          sha1Checkpoints.push(sha1.copy().digest('hex'))
+          // QQ expects the raw compression state, not the padded prefix digest.
+          sha1Checkpoints.push(sha1State.stateLittleEndian().toString('hex'))
           sha1Bytes = 0
         }
       }
-    } else {
-      sha1.update(chunk)
     }
     if (first10MSize < first10MLimit) {
       const accepted = chunk.subarray(0, Math.min(chunk.length, first10MLimit - first10MSize))
@@ -1832,7 +1834,10 @@ async function hashMediaSource(
     throw new Error(`incomplete media source: expected ${source.size} bytes, streamed ${size}`)
   }
   const sha1Digest = sha1.digest('hex')
+  // The final checkpoint is always the whole-file digest; for an exact
+  // multiple of the block size it replaces the last intermediate state.
   if (sha1Checkpoints && sha1Bytes > 0) sha1Checkpoints.push(sha1Digest)
+  else if (sha1Checkpoints?.length) sha1Checkpoints[sha1Checkpoints.length - 1] = sha1Digest
   return {
     size,
     md5: md5.digest('hex'),

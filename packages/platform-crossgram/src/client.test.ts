@@ -619,7 +619,8 @@ describe('QQNTClient streaming transport', () => {
     const video = Buffer.alloc(blockSize + 37)
     for (let index = 0; index < video.length; index++) video[index] = index % 251
     const expectedCheckpoints = [
-      createHash('sha1').update(video.subarray(0, blockSize)).digest('hex'),
+      // Unpadded little-endian SHA-1 state after the first MiB (not the prefix digest).
+      '463935c7eea4ca2705d0f481ecedb31f4d0f3a96',
       createHash('sha1').update(video).digest('hex'),
     ]
     let preparedMedia: Record<string, any> | undefined
@@ -669,6 +670,51 @@ describe('QQNTClient streaming transport', () => {
       sha1: expectedCheckpoints[1],
       sha1Checkpoints: expectedCheckpoints,
     })
+  })
+
+  it('ends an exact-MiB video with the whole-file digest instead of a trailing state', async () => {
+    const blockSize = 1024 * 1024
+    const video = Buffer.alloc(blockSize * 2)
+    for (let index = 0; index < video.length; index++) video[index] = index % 251
+    let preparedMedia: Record<string, any> | undefined
+    server = createServer(async (request, response) => {
+      if (request.url === '/status') {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ protocolVersion: 24 }))
+        return
+      }
+      if (request.url === '/uploads/prepare') {
+        preparedMedia = JSON.parse((await collect(request)).toString()).media
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          prepared: { kind: 'video', fileUuid: 'cached-video', msgInfo: 'bXNn' },
+        }))
+        return
+      }
+      await collect(request)
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
+        id: 'sent', conversationId: '1:uid', senderId: 'self', timestamp: 1, outgoing: true, parts: [],
+      }))
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing address')
+    const client = new QQNTClient({
+      endpoint: `http://127.0.0.1:${address.port}`,
+      videoThumbnail: async () => ({ bytes: Buffer.of(1), width: 1, height: 1 }),
+    })
+
+    await client.sendMessage('1:uid', undefined, [{
+      kind: 'file', name: 'exact.mp4', mimeType: 'video/mp4',
+      source: { size: video.length, async *stream() { yield video } },
+    }])
+
+    expect(preparedMedia?.sha1Checkpoints).toEqual([
+      '463935c7eea4ca2705d0f481ecedb31f4d0f3a96',
+      createHash('sha1').update(video).digest('hex'),
+    ])
   })
 
   it('does not silently accept a short media source', async () => {
