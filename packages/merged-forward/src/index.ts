@@ -126,6 +126,10 @@ export class MergedForwardProjection {
     for (const part of bundles) {
       const record = this.remember(input.session.platformSessionId, part.bundle)
       const snapshots = await this.loadSnapshots(input, record)
+      if (!record.bundle.preview?.trim()) {
+        const preview = snapshotPreview(snapshots)
+        if (preview) record.bundle = { ...record.bundle, preview }
+      }
       const first = firstSnapshot(part.bundle, snapshots)
       const target = first ? bundleMessageId(part.bundle, first, 0) : undefined
       if (target) targets.set(part.bundle.id, target)
@@ -203,7 +207,9 @@ export class MergedForwardProjection {
         id: Long.fromNumber(stableId(`merged-forward-preview:${record.bundle.id}`)),
         url, displayUrl: record.bundle.title, hash: 0,
         type: 'telegram_message', title: record.bundle.title,
-        description: record.bundle.preview?.trim() || '点击查看合并转发消息',
+        // Without archived content the card shows only its title: never a
+        // placeholder sentence that pretends to be a preview.
+        description: record.bundle.preview?.trim() || undefined,
         // Telegram clients render a webpage photo beside the title, which is
         // where the merged forward shows the avatar of the chat it came from.
         photo: avatar
@@ -639,6 +645,33 @@ function firstSnapshot(
       || bundleMessageId(bundle, left.snapshot, 0) - bundleMessageId(bundle, right.snapshot, 0)
       || left.index - right.index)[0]
     ?.snapshot
+}
+
+/**
+ * Content preview of a bundle, one line per archived message, for platforms
+ * that supply none.  Mirrors the layout native merged forwards show on their
+ * card: the first few messages as `sender: text`.
+ */
+export function snapshotPreview(snapshots: readonly IMMessageSnapshot[]): string | undefined {
+  const lines = [...snapshots]
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .slice(0, 4)
+    .map((snapshot) => {
+      const sender = [snapshot.sender?.firstName, snapshot.sender?.lastName]
+        .filter(Boolean).join(' ').trim() || snapshot.senderId
+      const content = snapshot.content.parts.map((part) => {
+        if (part.type === 'text') return part.text.trim()
+        if (part.type === 'media') {
+          return part.media.kind === 'image' ? '[图片]' : part.media.name?.trim() || '[文件]'
+        }
+        if (part.type === 'sticker') return '[表情]'
+        if (part.type === 'card') return part.card.title?.trim() || '[卡片消息]'
+        return `[${part.bundle.title || '聊天记录'}]`
+      }).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+      return content ? `${sender}: ${content}` : ''
+    })
+    .filter(Boolean)
+  return lines.join('\n') || undefined
 }
 
 /** Reads the optional avatar of the chat a bundle was archived from. */

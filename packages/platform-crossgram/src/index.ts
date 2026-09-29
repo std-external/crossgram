@@ -1691,8 +1691,11 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
     message: IMMessage<QQMediaLocator>,
   ): Promise<IMMessage<QQMediaLocator>> {
     const handler = this.eventHandlers.get(session.platformSessionId)
+    // History refreshes rewrite the stored message, so they must carry the
+    // same merged-forward preview the live event resolved; otherwise every
+    // re-fetch replaces it with QQ's content-free card footer.
     const withFaceSizes = await this.hydrateReactionResourceSizes(
-      session, handler ? message : await this.prepareInitialMessage(message),
+      session, await this.prepareInitialMessage(message),
     )
     const prepared = await this.hydrateStickerAssetSizes(session, withFaceSizes)
     this.scheduleInlinePreview(session, conversation, prepared, handler)
@@ -2765,7 +2768,9 @@ function mapParts(
         bundle: {
           id: multiForwardBundleId(part.locator),
           title: part.title || '聊天记录',
-          preview: part.preview,
+          // QQ's card footer names no content; leave the preview empty so it is
+          // built from the archived records instead.
+          preview: part.preview && isDetailedMultiForwardPreview(part.preview) ? part.preview : undefined,
           locator: { ...part.locator },
         },
       })

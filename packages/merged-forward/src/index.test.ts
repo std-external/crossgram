@@ -6,7 +6,7 @@ import {
   type MessageProjectionInput,
   type PlatformSession,
 } from '@mtproto-relay/bridge'
-import { makeMergedForwardProvider } from './index.js'
+import { makeMergedForwardProvider, snapshotPreview } from './index.js'
 
 const session: PlatformSession = {
   platformId: 'test', platformSessionId: 'session-1', userId: 'self',
@@ -152,11 +152,49 @@ describe('merged-forward projection', () => {
     }
   })
 
-  it('uses a generic preview when the platform supplies no detailed summary', () => {
+  it('never invents placeholder text when the platform supplies no summary', () => {
     const projection = makeMergedForwardProvider()
     const record = projection.remember(session.platformSessionId, { ...bundle, preview: undefined })
-    expect(projection.makePreview(record).webpage).toMatchObject({
-      description: '点击查看合并转发消息',
+    const webpage = projection.makePreview(record).webpage
+    if (webpage._ !== 'webPage') throw new Error('merged-forward preview is not a webpage')
+    expect(webpage.description).toBeUndefined()
+    expect(JSON.stringify(webpage)).not.toMatch(/转发消息/)
+  })
+
+  it('builds the card preview from the archived messages when the bundle has none', async () => {
+    const projection = makeMergedForwardProvider()
+    const adapter = platform(vi.fn(async () => [{
+      id: 'second', senderId: 'bob', timestamp: 200,
+      sender: { id: 'bob', firstName: 'Bob' },
+      content: { parts: [{ type: 'media' as const, media: { id: 'p', kind: 'image' as const, locator: {} } }] },
+    }, {
+      id: 'first', senderId: 'alice', timestamp: 100,
+      sender: { id: 'alice', firstName: 'Alice' },
+      content: { parts: [{ type: 'text' as const, text: '  第一条\n内容 ' }] },
+    }]))
+    const value = input(adapter)
+    value.draft.source = {
+      ...value.draft.source,
+      content: { parts: [{ type: 'message-bundle', bundle: { ...bundle, id: 'bundle:bare', preview: undefined } }] },
+    }
+    await projection.project(value, async () => ({
+      message: { _: 'message', id: value.tlMessageId, peerId: value.target.peer, date: 1, message: '' },
+      chats: value.draft.chats,
+    }))
+    expect(value.draft.media).toMatchObject({
+      webpage: { description: 'Alice: 第一条 内容\nBob: [图片]' },
     })
+  })
+
+  it('renders at most four archived lines in sender order of time', () => {
+    const snapshots = Array.from({ length: 6 }, (_, index) => ({
+      id: `m${index}`, senderId: `u${index}`, timestamp: 10 - index,
+      content: { parts: [{ type: 'text' as const, text: `t${index}` }] },
+    }))
+    expect(snapshotPreview(snapshots)).toBe('u5: t5\nu4: t4\nu3: t3\nu2: t2')
+    expect(snapshotPreview([])).toBeUndefined()
+    expect(snapshotPreview([{
+      id: 'empty', senderId: 'x', timestamp: 1, content: { parts: [{ type: 'text', text: '  ' }] },
+    }])).toBeUndefined()
   })
 })

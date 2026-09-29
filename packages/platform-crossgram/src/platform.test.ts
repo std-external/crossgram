@@ -1182,6 +1182,51 @@ describe('QQNTPlatform mapping', () => {
     expect(platform.client.getMultiForwardMessages).toHaveBeenCalledOnce()
   })
 
+  it('keeps the archived preview when history re-fetches a merged forward with a live subscriber', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getReactionCatalog = vi.fn(async () => ({ available: [], reactions: [], maxSelected: 20 }))
+    // A live subscriber exists: history refreshes used to skip preview
+    // preparation and wrote QQ's footer back over the resolved preview.
+    ;(platform as unknown as { eventHandlers: Map<string, unknown> })
+      .eventHandlers.set(session.platformSessionId, vi.fn())
+    platform.client.getHistory = vi.fn(async () => ({ messages: [{
+      id: 'footer-root', conversationId: 'outer-group', senderId: 'alice', timestamp: 20, outgoing: false,
+      parts: [{
+        type: 'multi-forward' as const, title: '群聊的聊天记录', preview: '查看1条转发消息',
+        locator: { conversationId: 'outer-group', rootMessageId: 'footer-root' },
+      }],
+    }] }))
+    platform.client.getMultiForwardMessages = vi.fn(async () => [{
+      id: 'inside', conversationId: 'archived', senderId: 'sadost', timestamp: 19, outgoing: false,
+      sender: { id: 'sadost', name: 'SaDOS' },
+      parts: [{ type: 'text' as const, text: '解剖结论：这是一锅真原料炖糊的汤' }],
+    }])
+
+    const page = await platform.getHistory(session, { id: 'outer-group' }, { limit: 10 })
+    const part = page.messages[0]?.content.parts[0]
+    if (part?.type !== 'message-bundle') throw new Error('merged-forward bundle was not mapped')
+    expect(part.bundle.preview).toBe('SaDOS: 解剖结论：这是一锅真原料炖糊的汤')
+    expect(JSON.stringify(page)).not.toMatch(/查看\s*\d+\s*条转发消息/)
+  })
+
+  it('drops QQ card footers from merged-forward previews before they reach the relay', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.forwardMessages = vi.fn(async () => [{
+      id: 'footer-only', conversationId: 'to', senderId: 'self', timestamp: 10, outgoing: true,
+      parts: [{
+        type: 'multi-forward' as const, title: '聊天记录', preview: '查看 3 条转发消息',
+        locator: { conversationId: 'to', rootMessageId: 'footer-only' },
+      }],
+    }])
+    // Archive unavailable: the preview must stay empty, not echo the footer.
+    platform.client.getMultiForwardMessages = vi.fn(async () => { throw new Error('offline') })
+
+    const [merged] = await platform.forwardMessages(session, { id: 'from' }, ['a', 'b'], { id: 'to' })
+    const part = merged.content.parts[0]
+    if (part.type !== 'message-bundle') throw new Error('merged-forward bundle was not mapped')
+    expect(part.bundle.preview).toBeUndefined()
+  })
+
   it('re-sends content instead of retaining QQ source attribution when dropAuthor is requested', async () => {
     const platform = new QQNTPlatform()
     platform.client.getMessage = vi.fn(async (_conversation, messageId) => ({
