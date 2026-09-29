@@ -1984,7 +1984,8 @@ async function nativeResponseError(response: Response): Promise<string> {
   return `QQNT native media ${response.status}: ${text || response.statusText}`
 }
 
-function qqAvatarUrl(locator: QQMediaLocator): string | undefined {
+/** Public URL of a QQ user or group avatar locator, when QQ names one. */
+export function qqAvatarUrl(locator: QQMediaLocator): string | undefined {
   const direct = httpUrl(locator.avatarUrl)
   if (direct) return direct
   const userUin = locator.avatarUin?.trim()

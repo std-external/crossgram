@@ -16,7 +16,7 @@ import {
   type IMUser, type IMUserPage, type PlatformCapabilities, type PlatformSession, type Unsubscribe,
   type VoiceCallMediaProvider, type VoiceWorkerCall, type VoiceWorkerMediaEndpoint,
 } from '@mtproto-relay/bridge'
-import { QQNTClient, QQNTMessageSendRejectedError, type QQNTClientOptions } from './client.js'
+import { QQNTClient, QQNTMessageSendRejectedError, qqAvatarUrl, type QQNTClientOptions } from './client.js'
 import { defineQQNTEventCheckpointModel } from './event-checkpoint.js'
 import { QQStickerProvider } from './sticker-provider.js'
 import { QQVoiceMedia } from './voice-media.js'
@@ -74,6 +74,9 @@ const REACTION_RESOURCE_SIZE_TIMEOUT_MS = 5_000
 /** How long a resolved reaction asset size/version stays authoritative. */
 const REACTION_RESOURCE_META_TTL_MS = 10 * 60_000
 const STICKER_ASSET_META_TTL_MS = 10 * 60_000
+// qlogo avatar URLs are unsigned, so the TTL only bounds how long a consumer
+// keeps a picture the user may since have changed.
+const AVATAR_DIRECT_URL_TTL_MS = 10 * 60_000
 const WEBSOCKET_RECONNECT_BASE_DELAY_MS = 1_000
 const WEBSOCKET_RECONNECT_MAX_DELAY_MS = 60_000
 const MULTI_FORWARD_CACHE_LIMIT = 256
@@ -1473,8 +1476,18 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
     _session: PlatformSession,
     media: IMMedia<QQMediaLocator>,
   ): Promise<IMDirectDownload | undefined> {
-    const locator = media.locator
+    let locator = media.locator
     if (!locator || locator.deferred) return
+    if (media.id.startsWith('avatar:')) {
+      // Avatars carry no rich-media file identity; their public URL comes from
+      // the QQ number or the face URL QQ archived with the author.
+      if (needsUserAvatarRefresh(media, locator)) {
+        const refreshed = await this.client.getUser(locator.peerUid).catch(() => null)
+        locator = refreshed?.avatar?.locator ?? locator
+      }
+      const url = qqAvatarUrl(locator)
+      return url ? { url, expiresAt: Date.now() + AVATAR_DIRECT_URL_TTL_MS, supportsRange: true } : undefined
+    }
     if (media.voice) return
     return this.client.resolveFileUrlForDirectDownload(rawQQMediaLocator(locator))
   }

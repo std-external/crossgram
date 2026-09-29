@@ -2,7 +2,7 @@ import { Bot, h, type Universal } from '@satorijs/core'
 import type { Context } from 'cordis'
 import {
   probeImageDimensions, providerBelongsToAccount, serviceActionText,
-  type IMConversation, type IMConversationMember, type IMMediaInput, type IMMessage, type IMMessageInput, type IMMessagePart,
+  type IMConversation, type IMConversationMember, type IMMediaInput, type IMUser, type IMMessage, type IMMessageInput, type IMMessagePart,
   type IMPlatform, type IMSticker, type IMStickerProvider, type IMStickerSendPlan, type IMTextEntity,
   type IngestResult, type JsonValue, type PlatformSession, type StickerProviderContext,
 } from '@mtproto-relay/bridge'
@@ -103,13 +103,17 @@ export class SatoriExporter {
       const elements = await this._messageElements(message, conversation, platform, canonical)
       if (!this.isActive(bot, generation) || this._session !== canonical) return
       if (!elements.length) return // system messages with no renderable text stay silent
-      const user = satoriMessageUser(message)
+      const avatar = await this._avatarUrl(message.sender, platform, canonical)
+      if (!this.isActive(bot, generation) || this._session !== canonical) return
+      const user = satoriMessageUser(message, avatar)
+      const member = conversation.kind === 'direct' ? undefined : satoriMessageMember(message, user)
       bot.dispatch(bot.session({
         type: 'message-created',
         timestamp: message.timestamp * 1_000,
         channel: satoriChannel(conversation),
         ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
         user,
+        ...(member ? { member } : {}),
         message: {
           id: message.id,
           content: elements.join(''),
@@ -117,6 +121,7 @@ export class SatoriExporter {
           channel: satoriChannel(conversation),
           ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
           user,
+          ...(member ? { member } : {}),
         },
       }))
     }).catch((error) => {
@@ -170,7 +175,11 @@ export class SatoriExporter {
       throw new Error('Satori exporter bot is no longer active')
     }
     if (!member) throw new Error(`Satori exporter cannot find guild member: ${guildId}/${userId}`)
-    return satoriGuildMember(member)
+    const avatar = await this._avatarUrl(member.user, platform, session)
+    if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+      throw new Error('Satori exporter bot is no longer active')
+    }
+    return satoriGuildMember(member, avatar)
   }
 
   async sendMessage(
@@ -205,14 +214,30 @@ export class SatoriExporter {
     if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) throw new Error('Satori exporter bot is no longer active')
     const outgoing = { ...message, conversationId: conversation.id, outgoing: true }
     await this._ctx.imPlatform.ingestLocalMessage(session, conversation, outgoing)
+    const elements = (await this._messageElements(outgoing, conversation, platform, session)).join('')
+    const user = satoriUser(message.senderId, message.sender, await this._avatarUrl(message.sender, platform, session))
     return [{
       id: outgoing.id,
-      content: (await this._messageElements(outgoing, conversation, platform, session)).join(''),
+      content: elements,
       createdAt: outgoing.timestamp * 1_000,
       channel: satoriChannel(conversation),
-      ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
-      user: satoriUser(message.senderId, message.sender),
+      ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation), member: satoriMessageMember(outgoing, user) }),
+      user,
     }]
+  }
+
+  /** A missing avatar never holds back the message or member it decorates. */
+  private async _avatarUrl(
+    user: Pick<IMUser, 'id' | 'avatar'> | undefined,
+    platform: IMPlatform,
+    session: PlatformSession,
+  ): Promise<string | undefined> {
+    if (!user?.avatar || !platform.resolveMediaUrl) return
+    try {
+      return (await platform.resolveMediaUrl(session, user.avatar))?.url
+    } catch (error) {
+      this._logger.warn('Satori avatar export unavailable user=%s media=%s error=%s', user.id, user.avatar.id, formatError(error))
+    }
   }
 
   private async _messageElements(
@@ -591,21 +616,38 @@ function satoriGuild(conversation: IMConversation): Universal.Guild {
   return { id: conversation.spaceId ?? conversation.id, name: conversation.title }
 }
 
-function satoriUser(id: string, user: IMMessage['sender']): Universal.User {
-  return { id, name: user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || id : id }
+function satoriUser(id: string, user: IMMessage['sender'], avatar?: string): Universal.User {
+  const name = user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || id : id
+  return { id, name, nick: name, ...(avatar ? { avatar } : {}) }
 }
 
 /** System messages whose only sender is the platform placeholder get an explicit label. */
-function satoriMessageUser(message: IMMessage): Universal.User {
+function satoriMessageUser(message: IMMessage, avatar?: string): Universal.User {
   if (message.content.serviceAction && (!message.senderId || message.senderId === '0')) {
-    return { id: message.senderId || '0', name: '系统消息' }
+    return { id: message.senderId || '0', name: '系统消息', nick: '系统消息' }
   }
-  return satoriUser(message.senderId, message.sender)
+  return satoriUser(message.senderId, message.sender, avatar)
 }
 
-function satoriGuildMember(member: IMConversationMember): Universal.GuildMember {
+/**
+ * The sender as a member of a group conversation.
+ *
+ * Its name is the group card when the sender set one, and the global name
+ * otherwise, which is what `session.author.nickname` reads.
+ */
+function satoriMessageMember(message: IMMessage, user: Universal.User): Universal.GuildMember {
+  const name = message.senderTitle?.trim() || user.nick || user.name || user.id
+  return { name, nick: name, ...(user.avatar ? { avatar: user.avatar } : {}) }
+}
+
+function satoriGuildMember(member: IMConversationMember, avatar?: string): Universal.GuildMember {
+  const user = satoriUser(member.user.id, member.user, avatar)
+  const name = member.title?.trim() || user.nick!
   return {
-    user: satoriUser(member.user.id, member.user),
+    user,
+    name,
+    nick: name,
+    ...(avatar ? { avatar } : {}),
     title: member.title,
     joinedAt: member.joinedAt === undefined ? undefined : member.joinedAt * 1_000,
   }

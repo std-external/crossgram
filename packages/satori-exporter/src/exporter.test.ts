@@ -8,7 +8,7 @@ import WebSocket from 'ws'
 import { Readable } from 'node:stream'
 import { SatoriExporter, type SatoriExportConfig } from './exporter.js'
 import type {
-  IMConversation, IMConversationMember, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
+  IMConversation, IMConversationMember, IMMedia, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
 } from '@mtproto-relay/bridge'
 
 const session: PlatformSession = {
@@ -50,7 +50,7 @@ class TestPlatform implements IMPlatform {
     id, kind: id.startsWith('direct:') ? 'direct' as const : 'group' as const, title: id,
   }))
   readonly getConversationMember = vi.fn(async (): Promise<IMConversationMember | null> => null)
-  readonly resolveMediaUrl = vi.fn(async () => ({
+  readonly resolveMediaUrl = vi.fn(async (_session: PlatformSession, _media: IMMedia) => ({
     url: 'https://media.test/file', expiresAt: Date.now() + 60_000, supportsRange: true,
   }))
   readonly sendMessage = vi.fn(async (
@@ -128,7 +128,7 @@ async function createSatoriServer(token?: string, limits: { maxRequestBodyBytes?
   const exporter = new SatoriExporter(ctx, { platformId: 'qqnt', platform: 'qq' }, { warn: vi.fn() })
   const platform = new TestPlatform()
   exporter.start(platform, session)
-  return { ctx, platform, events: new URL('/satori/v1/events', ctx.server.baseUrl) }
+  return { ctx, exporter, platform, events: new URL('/satori/v1/events', ctx.server.baseUrl) }
 }
 
 function message(id: string, conversationId: string, outgoing = false): IMMessage {
@@ -169,6 +169,92 @@ describe('SatoriExporter', () => {
     ])
     expect(events[1]?.event.guild).toBeUndefined()
     expect(platform.subscribe).not.toHaveBeenCalled()
+  })
+
+  it('exposes the sender avatar and group card through session.author', async () => {
+    const { ctx, exporter, platform } = await createExporter()
+    platform.resolveMediaUrl.mockImplementation(async (_session, media) => ({
+      url: `https://q1.qlogo.cn/g?b=qq&nk=${String(media.id)}&s=640`, expiresAt: Date.now() + 60_000, supportsRange: true,
+    }))
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+    const avatar = { id: '10001', kind: 'image' as const }
+
+    exporter.handleMessage(session, group, {
+      ...message('carded', group.id),
+      sender: { id: 'alice', firstName: 'Alice', avatar },
+      senderTitle: '  群名片  ',
+    }, { created: true })
+    exporter.handleMessage(session, group, {
+      ...message('uncarded', group.id),
+      sender: { id: 'alice', firstName: 'Alice', avatar },
+    }, { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(2))
+    const url = 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640'
+    expect(events[0]!.event.user).toEqual({ id: 'alice', name: 'Alice', nick: 'Alice', avatar: url })
+    expect(events[0]!.event.member).toEqual({ name: '群名片', nick: '群名片', avatar: url })
+    expect(events[0]!.event.message?.member).toEqual({ name: '群名片', nick: '群名片', avatar: url })
+    expect(events[0]!.author).toMatchObject({
+      id: 'alice', userId: 'alice', username: 'Alice', nickname: '群名片', name: '群名片', avatar: url,
+    })
+    expect(events[1]!.author).toMatchObject({ nickname: 'Alice', avatar: url })
+    expect(platform.resolveMediaUrl).toHaveBeenCalledWith(session, avatar)
+  })
+
+  it('keeps direct-message authors free of a guild member', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const direct: IMConversation = { id: 'u_alice', kind: 'direct', title: 'Alice' }
+
+    exporter.handleMessage(session, direct, {
+      ...message('direct', direct.id),
+      sender: { id: 'alice', firstName: 'Alice', avatar: { id: 'avatar', kind: 'image' } },
+    }, { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    expect(events[0]!.event.member).toBeUndefined()
+    expect(events[0]!.event.message?.member).toBeUndefined()
+    expect(events[0]!.author).toMatchObject({ id: 'alice', username: 'Alice', avatar: 'https://media.test/file' })
+  })
+
+  it('still delivers a message whose sender avatar cannot be resolved', async () => {
+    const { ctx, exporter, platform, warnings } = await createExporter()
+    platform.resolveMediaUrl
+      .mockRejectedValueOnce(new Error('no avatar url'))
+      .mockResolvedValueOnce(undefined as never)
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+    const sender = { id: 'alice', firstName: 'Alice', avatar: { id: 'avatar:user:alice', kind: 'image' as const } }
+
+    exporter.handleMessage(session, group, { ...message('failed', group.id), sender }, { created: true })
+    exporter.handleMessage(session, group, { ...message('missing', group.id), sender }, { created: true })
+    exporter.handleMessage(session, group, message('none', group.id), { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(3))
+    for (const event of events) {
+      expect(event.event.user).toEqual({ id: 'alice', name: 'Alice', nick: 'Alice' })
+      expect(event.event.member).toEqual({ name: 'Alice', nick: 'Alice' })
+    }
+    expect(platform.resolveMediaUrl).toHaveBeenCalledTimes(2)
+    expect(warnings).toHaveBeenCalledWith(
+      'Satori avatar export unavailable user=%s media=%s error=%s', 'alice', 'avatar:user:alice', expect.stringContaining('no avatar url'),
+    )
+  })
+
+  it('names an unnamed sender after its ID in the exported member', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+
+    exporter.handleMessage(session, group, { ...message('anonymous', group.id), sender: undefined }, { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    expect(events[0]!.author).toMatchObject({ id: 'alice', username: 'alice', nickname: 'alice' })
   })
 
   it('exports gray-tip service messages with a system sender label', async () => {
@@ -314,9 +400,38 @@ describe('SatoriExporter', () => {
     platform.getConversationMember.mockResolvedValueOnce(guildMember)
 
     await expect(ctx.bots[0]!.getGuildMember('guild:7', 'alice')).resolves.toEqual({
-      user: { id: 'alice', name: 'Alice Member' }, title: 'Moderator', joinedAt: 1_700_000_000_000,
+      user: { id: 'alice', name: 'Alice Member', nick: 'Alice Member' },
+      name: 'Moderator', nick: 'Moderator', title: 'Moderator', joinedAt: 1_700_000_000_000,
     })
     expect(platform.getConversationMember).toHaveBeenCalledWith(session, { id: 'group:42' }, 'alice')
+  })
+
+  it('exports a guild member avatar, falling back to its global name without a card', async () => {
+    const { ctx, platform, warnings } = await createExporter()
+    platform.getConversationMember.mockResolvedValueOnce({
+      ...guildMember, title: undefined,
+      user: { ...guildMember.user, avatar: { id: 'avatar:user:alice', kind: 'image' } },
+    })
+
+    await expect(ctx.bots[0]!.getGuildMember('guild:7', 'alice')).resolves.toEqual({
+      user: { id: 'alice', name: 'Alice Member', nick: 'Alice Member', avatar: 'https://media.test/file' },
+      name: 'Alice Member', nick: 'Alice Member', avatar: 'https://media.test/file', joinedAt: 1_700_000_000_000,
+    })
+    expect(warnings).not.toHaveBeenCalled()
+  })
+
+  it('returns a guild member even when its avatar URL fails', async () => {
+    const { ctx, platform, warnings } = await createExporter()
+    platform.resolveMediaUrl.mockRejectedValueOnce(new Error('avatar offline'))
+    platform.getConversationMember.mockResolvedValueOnce({
+      ...guildMember, user: { ...guildMember.user, avatar: { id: 'avatar:user:alice', kind: 'image' } },
+    })
+
+    const member = await ctx.bots[0]!.getGuildMember('guild:7', 'alice')
+    expect(member).toMatchObject({ name: 'Moderator', user: { id: 'alice' } })
+    expect(member.avatar).toBeUndefined()
+    expect(member.user?.avatar).toBeUndefined()
+    expect(warnings).toHaveBeenCalledTimes(1)
   })
 
   it('uses the QQNT guild ID directly when no cached conversation exists', async () => {
@@ -420,6 +535,24 @@ describe('SatoriExporter', () => {
     }))
     expect(platform.getConversation).toHaveBeenCalledWith(session, 'group:42')
     expect(platform.subscribe).not.toHaveBeenCalled()
+  })
+
+  it('reports the sent message author with its avatar and group member', async () => {
+    const { ctx, platform } = await createExporter()
+    platform.sendMessage.mockResolvedValueOnce({
+      id: 'sent:2', conversationId: 'group:42', senderId: 'self', timestamp: 1_700_000_001, outgoing: true,
+      sender: { id: 'self', firstName: 'Self', avatar: { id: 'avatar:user:self', kind: 'image' } },
+      senderTitle: '机器人',
+      content: { parts: [{ type: 'text', text: 'hello' }] },
+    })
+
+    await expect(ctx.bots[0]!.createMessage('group:42', [h.text('hello')])).resolves.toEqual([{
+      id: 'sent:2', content: 'hello', createdAt: 1_700_000_001_000,
+      channel: { id: 'group:42', type: 0, name: 'group:42' },
+      guild: { id: 'group:42', name: 'group:42' },
+      member: { name: '机器人', nick: '机器人', avatar: 'https://media.test/file' },
+      user: { id: 'self', name: 'Self', nick: 'Self', avatar: 'https://media.test/file' },
+    }])
   })
 
   it('resolves a direct conversation before its first outbound message', async () => {
@@ -1006,6 +1139,33 @@ describe('SatoriExporter', () => {
     socket.close()
   })
 
+  it('pushes the sender avatar and group card over the authenticated events socket', async () => {
+    const { exporter, events } = await createSatoriServer('test-token')
+    const socket = await openSocket(events)
+    const payloads: Array<{ op: Universal.Opcode, body: Record<string, unknown> }> = []
+    socket.on('message', (data) => payloads.push(JSON.parse(data.toString())))
+    socket.send(JSON.stringify({ op: Universal.Opcode.IDENTIFY, body: { token: 'test-token' } }))
+    await vi.waitFor(() => expect(payloads).toHaveLength(1))
+
+    exporter.handleMessage(session, { id: '42', kind: 'group', title: 'QQ Group' }, {
+      ...message('socket', '42'),
+      sender: { id: 'alice', firstName: 'Alice', avatar: { id: 'avatar:user:alice', kind: 'image' } },
+      senderTitle: '群名片',
+    }, { created: true })
+
+    await vi.waitFor(() => expect(payloads).toHaveLength(2))
+    expect(payloads[1]).toMatchObject({
+      op: Universal.Opcode.EVENT,
+      body: {
+        type: 'message-created',
+        user: { id: 'alice', name: 'Alice', nick: 'Alice', avatar: 'https://media.test/file' },
+        member: { name: '群名片', nick: '群名片', avatar: 'https://media.test/file' },
+        message: { id: 'socket', content: 'message socket' },
+      },
+    })
+    socket.close()
+  })
+
   it('does not register the unsupported public proxy route', async () => {
     const { ctx } = await createSatoriServer('test-token')
 
@@ -1185,7 +1345,8 @@ describe('SatoriExporter', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({
-      user: { id: 'alice', name: 'Alice Member' }, title: 'Moderator', joined_at: 1_700_000_000_000,
+      user: { id: 'alice', name: 'Alice Member', nick: 'Alice Member' },
+      name: 'Moderator', nick: 'Moderator', title: 'Moderator', joined_at: 1_700_000_000_000,
     })
     expect(platform.getConversationMember).toHaveBeenCalledWith(session, { id: 'guild:7' }, 'alice')
   })

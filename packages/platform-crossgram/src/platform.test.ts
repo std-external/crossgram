@@ -2793,6 +2793,104 @@ describe('QQNTPlatform mapping', () => {
     await unsubscribe()
   })
 
+  it('resolves a QQ-number avatar to its qlogo URL without a rich-media lookup', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.resolveFileUrlForDirectDownload = vi.fn(async () => {
+      throw new Error('avatars have no rich-media identity')
+    })
+    const before = Date.now()
+    const media: IMMedia<QQMediaLocator> = {
+      id: 'avatar:user:u_alice:original-v1', kind: 'image', mimeType: 'image/jpeg',
+      locator: {
+        messageId: 'avatar:user:u_alice', elementId: 'avatar:user:u_alice', chatType: 1,
+        peerUid: 'u_alice', kind: 'image', fileName: '10001.jpg', avatarUin: '10001',
+      },
+    }
+
+    const resolved = await platform.resolveMediaUrl(session, media)
+    expect(resolved).toMatchObject({ url: 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640', supportsRange: true })
+    expect(resolved!.expiresAt).toBeGreaterThan(before)
+    expect(platform.client.resolveFileUrlForDirectDownload).not.toHaveBeenCalled()
+  })
+
+  it('resolves an archived merged-forward avatar to its face URL', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getUser = vi.fn(async () => {
+      throw new Error('archived avatars must not refresh the placeholder peer')
+    })
+    const media: IMMedia<QQMediaLocator> = {
+      id: 'avatar:user:qqnt-multi-forward-participant:abc:original-v1', kind: 'image',
+      locator: {
+        messageId: 'avatar:user:qqnt-multi-forward-participant:abc',
+        elementId: 'avatar:user:qqnt-multi-forward-participant:abc',
+        chatType: 1, peerUid: 'qqnt-multi-forward-participant:abc', kind: 'image',
+        fileName: 'alice.jpg', avatarUrl: 'https://thirdqq.qlogo.cn/avatar/alice/100',
+      },
+    }
+
+    await expect(platform.resolveMediaUrl(session, media)).resolves.toMatchObject({
+      url: 'https://thirdqq.qlogo.cn/avatar/alice/100',
+    })
+    expect(platform.client.getUser).not.toHaveBeenCalled()
+  })
+
+  it('resolves a group avatar to its qlogo URL', async () => {
+    const platform = new QQNTPlatform()
+    const media: IMMedia<QQMediaLocator> = {
+      id: 'avatar:group:123456:original-v1', kind: 'image',
+      locator: {
+        messageId: 'avatar:group:123456', elementId: 'avatar:group:123456', chatType: 2,
+        peerUid: '123456', kind: 'image', fileName: '123456.jpg',
+      },
+    }
+
+    await expect(platform.resolveMediaUrl(session, media)).resolves.toMatchObject({
+      url: 'https://p.qlogo.cn/gh/123456/123456/640/',
+    })
+  })
+
+  it('refreshes a UID-only avatar through its user before resolving a URL', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getUser = vi.fn(async () => ({
+      id: 'u_alice', numericId: '10001', name: 'Alice',
+      avatar: {
+        id: 'avatar:user:u_alice', kind: 'image' as const,
+        locator: {
+          messageId: 'avatar:user:u_alice', elementId: 'avatar:user:u_alice', chatType: 1 as const,
+          peerUid: 'u_alice', kind: 'image' as const, fileName: '10001.jpg', avatarUin: '10001',
+        },
+      },
+    }))
+    const media: IMMedia<QQMediaLocator> = {
+      id: 'avatar:user:u_alice:original-v1', kind: 'image',
+      locator: {
+        messageId: 'avatar:user:u_alice', elementId: 'avatar:user:u_alice', chatType: 1,
+        peerUid: 'u_alice', kind: 'image', fileName: 'u_alice.jpg',
+      },
+    }
+
+    await expect(platform.resolveMediaUrl(session, media)).resolves.toMatchObject({
+      url: 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640',
+    })
+    expect(platform.client.getUser).toHaveBeenCalledWith('u_alice')
+  })
+
+  it('reports no URL for an avatar QQ cannot name', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getUser = vi.fn(async () => null as never)
+    platform.client.resolveFileUrlForDirectDownload = vi.fn()
+    const media: IMMedia<QQMediaLocator> = {
+      id: 'avatar:user:u_ghost:original-v1', kind: 'image',
+      locator: {
+        messageId: 'avatar:user:u_ghost', elementId: 'avatar:user:u_ghost', chatType: 1,
+        peerUid: 'u_ghost', kind: 'image', fileName: 'u_ghost.jpg',
+      },
+    }
+
+    await expect(platform.resolveMediaUrl(session, media)).resolves.toBeUndefined()
+    expect(platform.client.resolveFileUrlForDirectDownload).not.toHaveBeenCalled()
+  })
+
   it('strips legacy local markers before resolving the original QQ image URL', async () => {
     const platform = new QQNTPlatform()
     platform.client.resolveFileUrlForDirectDownload = vi.fn(async () => ({

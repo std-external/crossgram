@@ -8,7 +8,7 @@ import Satori, { h } from '@satorijs/core'
 import * as bridge from '@mtproto-relay/bridge'
 import MemoryUpdateStore from '@mtproto-relay/update-store-memory'
 import type {
-  IMEvent, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
+  IMEvent, IMMedia, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
 } from '@mtproto-relay/bridge'
 import * as exporter from './index.js'
 
@@ -22,6 +22,9 @@ class LifecyclePlatform implements IMPlatform {
   readonly capabilities = capabilities
   readonly getAccount = vi.fn(async () => ({ user: { id: 'self', firstName: 'Self' }, credentials: {} }))
   readonly getConversation = vi.fn(async (_session: PlatformSession, id: string) => ({ id, kind: 'group' as const, title: id }))
+  readonly resolveMediaUrl = vi.fn(async (_session: PlatformSession, media: IMMedia) => ({
+    url: `https://q1.qlogo.cn/g?b=qq&nk=${media.id}&s=640`, expiresAt: Date.now() + 60_000, supportsRange: true,
+  }))
   readonly sendMessage = vi.fn(async (_session: PlatformSession, conversation: { id: string }, content: IMMessageInput): Promise<IMMessage> => ({
     id: 'sent', conversationId: conversation.id, senderId: 'self', timestamp: 1, outgoing: true, content: content as IMMessage['content'],
   }))
@@ -91,16 +94,25 @@ describe('standalone Satori exporter lifecycle', () => {
     const oldBot = ctx.bots[0]!
     expect(oldBot.status).toBe(1)
     const received: string[] = []
-    ctx.on('message-created', event => received.push(event.event.message!.id))
+    const authors: unknown[] = []
+    ctx.on('message-created', (event) => {
+      received.push(event.event.message!.id)
+      authors.push(event.author)
+    })
     await platform.emit({
       type: 'message',
       conversation: { id: 'group:42', kind: 'group', title: 'Group 42' },
       message: {
         id: 'incoming:1', conversationId: 'group:42', senderId: 'alice', timestamp: 1,
+        sender: { id: 'alice', firstName: 'Alice', avatar: { id: '10001', kind: 'image', mimeType: 'image/jpeg' } },
+        senderTitle: '群名片',
         content: { parts: [{ type: 'text', text: 'hello from bridge' }] },
       },
     })
     await vi.waitFor(() => expect(received).toEqual(['incoming:1']))
+    expect(authors).toMatchObject([{
+      id: 'alice', username: 'Alice', nickname: '群名片', avatar: 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640',
+    }])
 
     const [activeSession] = await ctx.database.get('mtproto_platform_session', { platformId: 'qqnt', active: true })
     if (!activeSession) throw new Error('missing active bridge session')
