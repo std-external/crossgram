@@ -355,13 +355,23 @@ describe('merged-forward projection and RPC e2e', () => {
     await expect(ctx.mtproto.dispatch(rpc, {
       _: 'messages.getPeerDialogs', peers: [{ _: 'inputDialogPeer', peer }],
     } as never)).resolves.toMatchObject({
-      // The synthetic peer is a history-only view.  It must not be returned
-      // as a dialog (or with a top message), otherwise clients persist it in
-      // the left-hand chat list after opening the link.
-      dialogs: [],
+      // The synthetic peer carries a dialog entry so clients that prefetch a
+      // dialog before an anchored history load can reach `messages.getHistory`
+      // (Android otherwise stops with no history request at all).  Its top
+      // message is empty, which is what keeps clients from persisting the
+      // transcript as a chat-list entry.
+      dialogs: [{
+        _: 'dialog', peer: { _: 'peerChat', chatId }, topMessage: 0, unreadCount: 0,
+      }],
       messages: [],
       chats: [{ _: 'chat', id: chatId, title: bundle.title }],
     })
+    // The entry is only a way through the client's dialog prefetch: the
+    // transcript must never show up in the dialog list itself.
+    const listed = await ctx.mtproto.dispatch(rpc, {
+      _: 'messages.getDialogs', offsetPeer: { _: 'inputPeerEmpty' },
+    } as never) as { chats?: Array<{ id: number }> }
+    expect(listed.chats?.map((chat) => chat.id) ?? []).not.toContain(chatId)
     await expect(ctx.mtproto.dispatch(rpc, {
       _: 'messages.getFullChat', chatId,
     } as never)).resolves.toMatchObject({

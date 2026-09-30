@@ -570,11 +570,6 @@ async function routeMergedForwardRpc(
     if (!records.length) return
     const virtualIndexes = new Set(records.map((entry) => entry.index))
     const ordinaryPeers = req.peers.filter((_item, index) => !virtualIndexes.has(index))
-    // Synthetic peers are history-only views, not dialogs.  Returning a
-    // `dialog` (or its top message) here makes Telegram clients mark the
-    // peer as having a real dialog entry and persist it in the left chat
-    // list.  Keep the peer entity available for resolving/opening the view,
-    // but deliberately leave the dialog and message vectors untouched.
     const projectedChats = await Promise.all(records.map(async ({ record }) => {
       const snapshots = await projection.loadSnapshots(state, record)
       return projection.makeChat(record, snapshots, await projection.loadAvatar(state, record))
@@ -582,9 +577,29 @@ async function routeMergedForwardRpc(
     const ordinary = ordinaryPeers.length
       ? await state.dialogs.getPeerDialogs({ ...req, peers: ordinaryPeers })
       : undefined
+    const virtualByIndex = new Map(records.map((entry) => [entry.index, entry.record]))
+    // A transcript is a history-only view that must not turn into a chat-list
+    // entry, so its dialog is published with `topMessage = 0`: clients apply
+    // the entry, load history from the message they were asked to open, and
+    // skip persisting a dialog whose top message is empty.  Android otherwise
+    // takes the dialog prefetch at the start of every anchored history load,
+    // finds no dialog for the peer and stops without ever asking for history,
+    // which left the transcript on skeleton placeholders.
+    let ordinaryCursor = 0
+    const dialogs: tl.TypeDialog[] = []
+    for (let index = 0; index < req.peers.length; index++) {
+      const record = virtualByIndex.get(index)
+      if (record) {
+        dialogs.push(transcriptDialog(record.chatId))
+        continue
+      }
+      if (req.peers[index]?._ !== 'inputDialogPeer') continue
+      const next = ordinary?.dialogs[ordinaryCursor++]
+      if (next) dialogs.push(next)
+    }
     return {
       _: 'messages.peerDialogs',
-      dialogs: ordinary?.dialogs ?? [],
+      dialogs,
       messages: ordinary?.messages ?? [],
       chats: uniqueById([...(ordinary?.chats ?? []), ...projectedChats]),
       users: ordinary?.users ?? [],
@@ -622,6 +637,30 @@ async function routeMergedForwardRpc(
         ...bundles.flatMap((bundle) => bundle.users),
       ]),
     }
+  }
+}
+
+/**
+ * Dialog entry a transcript chat may publish.
+ *
+ * It carries no top message on purpose: clients need the entry to reach the
+ * anchored history request, and their own code skips persisting a dialog
+ * whose top message is empty, so the transcript never becomes a chat-list
+ * entry.  Notification settings are the neutral defaults for a peer the
+ * viewer does not own.
+ */
+function transcriptDialog(chatId: number): tl.RawDialog {
+  return {
+    _: 'dialog',
+    peer: { _: 'peerChat', chatId },
+    topMessage: 0,
+    readInboxMaxId: 0,
+    readOutboxMaxId: 0,
+    unreadCount: 0,
+    unreadMentionsCount: 0,
+    unreadReactionsCount: 0,
+    unreadPollVotesCount: 0,
+    notifySettings: { _: 'peerNotifySettings' },
   }
 }
 
