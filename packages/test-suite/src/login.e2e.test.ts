@@ -2983,7 +2983,42 @@ describe('bridge login e2e', () => {
           { _: 'reactionEmoji', emoticon: '😢' },
         ],
       })
+      // A recent custom reaction published under an asset version the
+      // platform has since replaced, and one whose key left the catalog.
+      // Desktop keeps a placeholder for any id getCustomEmojiDocuments cannot
+      // resolve, so the relay must translate or drop both.
       const staticAdapter = ctx.imPlatform.require('static') as staticPlatformPlugin.StaticPlatform
+      const labParty = (await staticAdapter.getAvailableReactions(
+        bridge.sessionFromRow(platformLogin.session), { conversationId: 'reaction-sticker-lab' },
+      )).available.find((definition) => definition.key === 'party')!
+      const retiredParty = structuredClone(labParty)
+      if (retiredParty.presentation.type !== 'custom') throw new Error('expected custom party reaction')
+      retiredParty.presentation.resource.version = 0
+      const retiredPartyId = bridge.customReactionDocumentId(platformLogin.session.id, retiredParty)
+      const currentPartyId = bridge.customReactionDocumentId(platformLogin.session.id, labParty)
+      await ctx.database.create('mtproto_reaction_recent', {
+        platformSessionId: platformLogin.session.id, reactionType: 'custom',
+        reactionValue: String(retiredPartyId), definitionKey: 'party', lastUsedAt: new Date(Date.now() + 60_000),
+      })
+      await ctx.database.create('mtproto_reaction_recent', {
+        platformSessionId: platformLogin.session.id, reactionType: 'custom',
+        reactionValue: '424242', definitionKey: 'removed-face', lastUsedAt: new Date(Date.now() + 120_000),
+      })
+      const renderableRecent = await callRpc(resumed, key, resumedSid, {
+        _: 'messages.getRecentReactions', limit: 100, hash: Long.ZERO,
+      }, 1_191)
+      expect(renderableRecent.reactions).toEqual([
+        { _: 'reactionCustomEmoji', documentId: Long.fromNumber(currentPartyId) },
+        { _: 'reactionEmoji', emoticon: '❤️' },
+        { _: 'reactionEmoji', emoticon: '👍' },
+      ])
+      expect(await callRpc(resumed, key, resumedSid, {
+        _: 'messages.getCustomEmojiDocuments',
+        documentId: [Long.fromNumber(currentPartyId)],
+      }, 1_192)).toMatchObject([expect.objectContaining({ mimeType: 'image/webp' })])
+      await ctx.database.remove('mtproto_reaction_recent', {
+        platformSessionId: platformLogin.session.id, reactionType: 'custom',
+      })
       const adapterSession = bridge.sessionFromRow(platformLogin.session)
       const pushedContext = await staticAdapter.getAvailableReactions(
         adapterSession,

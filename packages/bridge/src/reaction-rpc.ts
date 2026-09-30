@@ -17,6 +17,8 @@ interface CustomEntry {
 interface RecentReaction {
   reactionType: 'emoji' | 'custom'
   reactionValue: string
+  /** Platform key of a custom reaction; survives the document id changing with the asset version. */
+  definitionKey?: string | null
   lastUsedAt: Date
 }
 
@@ -32,6 +34,8 @@ export class ReactionRpc {
    */
   private readonly _aliases = new Map<number, CustomEntry>()
   private readonly _memoryRecent = new Map<string, RecentReaction>()
+  /** Current published document id of every custom key seen in a platform catalog. */
+  private readonly _currentByKey = new Map<string, number>()
   private _recentWrite = Promise.resolve()
 
   constructor(
@@ -60,8 +64,12 @@ export class ReactionRpc {
       const reactions = definitions.map((definition) => this.toTlReaction(conversationId, definition))
       const existing = await this._recentRows()
       let timestamp = Math.max(Date.now(), ...existing.map((row) => row.lastUsedAt.getTime() + 1))
-      for (const reaction of reactions) {
-        const recent = serializeReaction(reaction, new Date(timestamp++))
+      for (const [index, reaction] of reactions.entries()) {
+        const definition = definitions[index]!
+        const recent = serializeReaction(
+          reaction, new Date(timestamp++),
+          definition.presentation.type === 'custom' ? definition.key : undefined,
+        )
         if (this._database) {
           await this._database.upsert('mtproto_reaction_recent', [{
             platformSessionId: this._session.platformSessionId,
@@ -87,13 +95,47 @@ export class ReactionRpc {
     }
   }
 
+  /**
+   * Recent reactions the client can still render.
+   *
+   * A custom reaction is stored by document id, and that id changes whenever
+   * the platform re-versions the asset. Telegram Desktop keeps a placeholder
+   * forever for a recent custom emoji that `getCustomEmojiDocuments` cannot
+   * resolve, so once this session knows its platform catalog, replace an id
+   * that is no longer published with its key's current document and drop the
+   * entry when the key itself left the catalog.
+   */
   private async _recentReactions(limit: number): Promise<tl.TypeReaction[]> {
     if (limit <= 0) return []
     await this._recentWrite
-    const rows = await this._recentRows(limit)
-    return rows.map((row) => row.reactionType === 'emoji'
-      ? { _: 'reactionEmoji', emoticon: row.reactionValue }
-      : { _: 'reactionCustomEmoji', documentId: Long.fromString(row.reactionValue) })
+    const rows = await this._recentRows()
+    const catalogKnown = this._currentByKey.size > 0
+    const seen = new Set<string>()
+    const reactions: tl.TypeReaction[] = []
+    for (const row of rows) {
+      if (reactions.length >= limit) break
+      let reaction: tl.TypeReaction
+      if (row.reactionType === 'emoji') {
+        reaction = { _: 'reactionEmoji', emoticon: row.reactionValue }
+      } else {
+        const id = Number(row.reactionValue)
+        const resolved = catalogKnown ? this._currentDocumentId(id, row.definitionKey) : id
+        if (resolved === undefined) continue
+        reaction = { _: 'reactionCustomEmoji', documentId: Long.fromNumber(resolved) }
+      }
+      const key = reactionKey(reaction)
+      if (seen.has(key)) continue
+      seen.add(key)
+      reactions.push(reaction)
+    }
+    return reactions
+  }
+
+  /** The published document for a recent id, following a retired id to its key's current version. */
+  private _currentDocumentId(id: number, definitionKey?: string | null): number | undefined {
+    const key = definitionKey ?? this._entry(id)?.definition.key
+    if (key !== undefined) return this._currentByKey.get(key)
+    return this._custom.has(id) ? id : undefined
   }
 
   private async _recentRows(limit?: number): Promise<RecentReaction[]> {
@@ -115,6 +157,20 @@ export class ReactionRpc {
       this._custom.set(this.customDocumentId(definition), {
         definition: definition as CustomEntry['definition'],
       })
+    }
+  }
+
+  /**
+   * Record the platform's current catalog of a conversation.
+   *
+   * Only a catalog decides which version of a key is current: a message may
+   * still carry the definition it was reacted with before a re-version.
+   */
+  private _registerCatalog(conversationId: string, context?: IMReactionContext): void {
+    this.registerContext(conversationId, context)
+    for (const definition of context?.available ?? []) {
+      if (definition.presentation.type !== 'custom') continue
+      this._currentByKey.set(definition.key, this.customDocumentId(definition))
     }
   }
 
@@ -147,7 +203,7 @@ export class ReactionRpc {
   }
 
   chatReactions(conversationId: string, context?: IMReactionContext): tl.TypeChatReactions {
-    this.registerContext(conversationId, context)
+    this._registerCatalog(conversationId, context)
     if (!context?.available.length) return { _: 'chatReactionsNone' }
     return {
       _: 'chatReactionsSome',
@@ -385,12 +441,19 @@ function reactionKey(reaction: tl.TypeReaction): string {
   return 'empty'
 }
 
-function serializeReaction(reaction: tl.TypeReaction, lastUsedAt: Date): RecentReaction {
+function serializeReaction(
+  reaction: tl.TypeReaction,
+  lastUsedAt: Date,
+  definitionKey?: string,
+): RecentReaction {
   if (reaction._ === 'reactionEmoji') {
     return { reactionType: 'emoji', reactionValue: reaction.emoticon, lastUsedAt }
   }
   if (reaction._ === 'reactionCustomEmoji') {
-    return { reactionType: 'custom', reactionValue: reaction.documentId.toString(), lastUsedAt }
+    return {
+      reactionType: 'custom', reactionValue: reaction.documentId.toString(),
+      definitionKey: definitionKey ?? null, lastUsedAt,
+    }
   }
   throw new RpcError(400, 'REACTION_INVALID')
 }

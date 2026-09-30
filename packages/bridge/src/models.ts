@@ -214,6 +214,7 @@ export interface ReactionRecentRow {
   platformSessionId: string
   reactionType: 'emoji' | 'custom'
   reactionValue: string
+  definitionKey?: string | null
   lastUsedAt: Date
 }
 
@@ -477,6 +478,7 @@ export function defineModels(ctx: Context): void {
 
   ctx.model.extend('mtproto_reaction_recent', {
     id: 'unsigned', platformSessionId: 'string', reactionType: 'string', reactionValue: 'text',
+    definitionKey: { type: 'text', nullable: true },
     lastUsedAt: 'timestamp',
   }, {
     primary: 'id', autoInc: true,

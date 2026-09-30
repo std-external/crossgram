@@ -291,6 +291,83 @@ describe('ReactionRpc', () => {
     }, context)).toThrowError(/REACTION_INVALID/)
   })
 
+  it('keeps recent custom reactions renderable across asset re-versions and catalog removals', async () => {
+    const database = await createDatabase()
+    const platform = { capabilities: {} } as IMPlatform
+    const face = (key: string, version: number): IMReactionDefinition => ({
+      key,
+      presentation: {
+        type: 'custom', alt: '🙂',
+        resource: { version, format: 'static', mimeType: 'image/png', width: 56, height: 56, size: 4 },
+      },
+    })
+    const writer = new ReactionRpc(platform, session, 1, database)
+    const oldSmile = face('1:14', 1)
+    const oldRemoved = face('1:999', 1)
+    const fire = { key: 'fire', presentation: { type: 'emoji' as const, emoticon: '🔥' } }
+    await writer.markUsed('group', [oldRemoved])
+    await writer.markUsed('group', [fire])
+    await writer.markUsed('group', [oldSmile])
+
+    // A fresh process has no catalog yet: nothing can be judged stale.
+    const cold = new ReactionRpc(platform, session, 1, database)
+    await expect(cold.recentReactions(10)).resolves.toMatchObject({
+      reactions: [
+        { documentId: Long.fromNumber(cold.customDocumentId(oldSmile)) },
+        { emoticon: '🔥' },
+        { documentId: Long.fromNumber(cold.customDocumentId(oldRemoved)) },
+      ],
+    })
+
+    // The platform re-versioned 1:14 and dropped 1:999 from its catalog.
+    const newSmile = face('1:14', 2)
+    cold.chatReactions('group', { available: [newSmile, fire], reactions: [], maxSelected: 20 })
+    const recent = await cold.recentReactions(10)
+    expect(recent.reactions).toEqual([
+      { _: 'reactionCustomEmoji', documentId: Long.fromNumber(cold.customDocumentId(newSmile)) },
+      { _: 'reactionEmoji', emoticon: '🔥' },
+    ])
+    // Every returned id resolves to a document, so Desktop never keeps a placeholder.
+    const ids = recent.reactions.flatMap((reaction) =>
+      reaction._ === 'reactionCustomEmoji' ? [reaction.documentId] : [])
+    expect(cold.getCustomEmojiDocuments(ids)).toHaveLength(ids.length)
+    await expect(cold.topReactions(3)).resolves.toMatchObject({
+      reactions: [
+        { documentId: Long.fromNumber(cold.customDocumentId(newSmile)) },
+        { emoticon: '🔥' },
+        { emoticon: '👍' },
+      ],
+    })
+  })
+
+  it('maps a recent row written before keys were stored through a retired inline alias', async () => {
+    const database = await createDatabase()
+    const platform = { capabilities: {} } as IMPlatform
+    const face = (version: number): IMReactionDefinition => ({
+      key: '1:14',
+      presentation: {
+        type: 'custom', alt: '🙂',
+        resource: { version, format: 'static', mimeType: 'image/png', width: 56, height: 56, size: 4 },
+      },
+    })
+    const legacy = legacyInlineCustomEmojiDocumentId(session.platformSessionId, 'group', face(1))
+    await database.create('mtproto_reaction_recent', {
+      platformSessionId: session.platformSessionId, reactionType: 'custom',
+      reactionValue: String(legacy), lastUsedAt: new Date(1),
+    })
+    await database.create('mtproto_reaction_recent', {
+      platformSessionId: session.platformSessionId, reactionType: 'custom',
+      reactionValue: '123', lastUsedAt: new Date(0),
+    })
+    const rpc = new ReactionRpc(platform, session, 1, database)
+    rpc.registerInlineCustomEmoji('group', face(1))
+    rpc.chatReactions('group', { available: [face(2)], reactions: [], maxSelected: 20 })
+
+    await expect(rpc.recentReactions(10)).resolves.toMatchObject({
+      reactions: [{ documentId: Long.fromNumber(rpc.customDocumentId(face(2))) }],
+    })
+  })
+
   it('keeps distinct platform reaction keys and resource versions separate', () => {
     const platform = { capabilities: {} } as IMPlatform
     const rpc = new ReactionRpc(platform, session)
