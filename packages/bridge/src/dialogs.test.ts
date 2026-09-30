@@ -220,6 +220,8 @@ describe('DialogRpc', () => {
 
     expect(middleware).toHaveBeenCalled()
     expect(history.messages[0]).toMatchObject({ _: 'message', message: 'projected history message' })
+    // Without a store the projected source has no durable row to address.
+    expect(middleware.mock.calls.every(([input]) => input.storedMessageId === undefined)).toBe(true)
   })
 
   it('resolves bridge-owned bots through their t.me username as Telegram bot users', async () => {

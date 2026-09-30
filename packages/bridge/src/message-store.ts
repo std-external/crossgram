@@ -917,6 +917,17 @@ export class MessageStore {
       .map((alias) => alias.platformMessageId)
   }
 
+  /**
+   * Stored source of one durable message row, scoped to its platform session.
+   * Deleted rows are gone for readers even though the tombstone row remains.
+   */
+  async readMessageByRowId(platformSessionId: string, messageId: number): Promise<IMMessage | undefined> {
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) return
+    const [row] = await this._database.get('mtproto_im_message', { id: messageId, platformSessionId })
+    if (!row || row.deleted) return
+    return this._hydrateMessage(row)
+  }
+
   async findProjectedByTlId(
     platformSessionId: string,
     tlMessageId: number,

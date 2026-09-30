@@ -163,7 +163,11 @@ describe('merged-forward projection and RPC e2e', () => {
       (item): item is tl.RawMessageEntityTextUrl => item._ === 'messageEntityTextUrl',
     )
     if (!entity) throw new Error('merged-forward projection did not create a deep link')
-    const chatId = stableId(`merged-forward-chat:${bundle.id}`)
+    // The transcript id encodes the stored row of the outer message, so it
+    // stays valid across relay restarts.
+    const [storedOuter] = await ctx.database.get('mtproto_im_message', { primaryPlatformMessageId: outerMessage.id })
+    const chatId = mergedForward.encodeBundleChatId({ storedMessageId: storedOuter!.id, path: [0] })!
+    expect(mergedForward.decodeBundleChatId(chatId)).toEqual({ storedMessageId: storedOuter!.id, path: [0] })
     const targetId = Number(new URL(entity.url).pathname.split('/').at(-1))
     expect(entity.url).toBe(`https://t.me/bridgebundle_${chatId}/${targetId}`)
     // The link opens the transcript from its beginning: the anchor is the
@@ -391,5 +395,123 @@ describe('merged-forward projection and RPC e2e', () => {
     await expect(ctx.mtproto.dispatch(rpc, {
       _: 'messages.readHistory', peer, maxId: targetId,
     } as never)).resolves.toMatchObject({ _: 'messages.affectedMessages' })
+  })
+
+  it('keeps an old transcript link working after the relay restarts', async () => {
+    const ctx = new Context()
+    const database = ctx.plugin(Database)
+    const sqlite = ctx.plugin(SQLiteDriver, { path: ':memory:' })
+    await Promise.all([database, sqlite])
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    defineModels(ctx)
+    await ctx.database.prepared()
+    const mtproto = ctx.plugin(Mtproto, { host: '127.0.0.1', port: 0 })
+    await mtproto
+    const pipeline = new MessageProjectionPipeline(ctx)
+    const store = new MessageStore(ctx.database, undefined, undefined, undefined, pipeline)
+    let dialogs = makeDialogs(store, pipeline)
+    const bridge = ctx.plugin((scope) => {
+      new MtprotoBridgeService(scope, async () => ({
+        generation: {}, platform, session, projection: pipeline, dialogs, stickers: {} as never,
+      } satisfies BridgeSessionState))
+    })
+    await bridge
+    let plugin = ctx.plugin(mergedForward)
+    await plugin
+    disposals.push(async () => {
+      await plugin.dispose()
+      await bridge.dispose()
+      await mtproto.dispose()
+      await sqlite.dispose()
+      await database.dispose()
+    })
+
+    // Before the restart: the client receives the outer message and its link.
+    const listed = await dialogs.getDialogs({
+      _: 'messages.getDialogs', offsetDate: 0, offsetId: 0,
+      offsetPeer: { _: 'inputPeerEmpty' }, limit: 100, hash: Long.ZERO,
+    }) as tl.messages.RawDialogs
+    const outer = listed.messages.find((item) => item._ === 'message') as tl.RawMessage
+    const link = outer.entities?.find(
+      (item): item is tl.RawMessageEntityTextUrl => item._ === 'messageEntityTextUrl',
+    )?.url
+    if (!link) throw new Error('merged-forward projection did not create a deep link')
+    const [, chatText, targetText] = /bridgebundle_(\d+)\/(\d+)$/.exec(link)!
+    const chatId = Number(chatText)
+    const targetId = Number(targetText)
+
+    // Restart: the feature plugin and every session object are recreated, so
+    // no process-local state from the first run survives.
+    await plugin.dispose()
+    dialogs = makeDialogs(store, pipeline)
+    plugin = ctx.plugin(mergedForward)
+    await plugin
+
+    const rpc = { connection: { remoteAddress: '127.0.0.1' } } as never
+    const peer = { _: 'inputPeerChat' as const, chatId }
+    // A client with the transcript chat cached skips resolveUsername and asks
+    // for the dialog and history directly.
+    await expect(ctx.mtproto.dispatch(rpc, {
+      _: 'messages.getPeerDialogs', peers: [{ _: 'inputDialogPeer', peer }],
+    } as never)).resolves.toMatchObject({
+      dialogs: [{ _: 'dialog', peer: { _: 'peerChat', chatId }, topMessage: 0 }],
+      chats: [{ _: 'chat', id: chatId, title: bundle.title }],
+    })
+    await expect(ctx.mtproto.dispatch(rpc, {
+      _: 'messages.getHistory', peer,
+      offsetId: targetId, offsetDate: 0, addOffset: -25, limit: 50,
+      maxId: 0, minId: 0, hash: Long.ZERO,
+    } as never)).resolves.toMatchObject({
+      messages: [
+        { _: 'message', peerId: { _: 'peerChat', chatId }, message: 'latest' },
+        { _: 'message', media: { _: 'messageMediaDocument' } },
+        { _: 'message', id: targetId, message: 'first' },
+      ],
+    })
+    await expect(ctx.mtproto.dispatch(rpc, {
+      _: 'messages.getMessages', id: [{ _: 'inputMessageID', id: targetId }],
+    } as never)).resolves.toMatchObject({
+      messages: [{ _: 'message', id: targetId, message: 'first' }],
+    })
+
+    // Another cold restart, this time opened through the username route.
+    await plugin.dispose()
+    plugin = ctx.plugin(mergedForward)
+    await plugin
+    await expect(ctx.mtproto.dispatch(rpc, {
+      _: 'contacts.resolveUsername', username: `bridgebundle_${chatId}`,
+    } as never)).resolves.toMatchObject({
+      _: 'contacts.resolvedPeer', peer: { _: 'peerChat', chatId },
+      chats: [{ _: 'chat', id: chatId, title: bundle.title }],
+    })
+
+    // Cold again: the transcript avatar a client cached is still served.
+    await plugin.dispose()
+    plugin = ctx.plugin(mergedForward)
+    await plugin
+    await expect(ctx.mtproto.dispatch(rpc, {
+      _: 'upload.getFile', precise: false, cdnSupported: false, offset: 0, limit: 64,
+      location: {
+        _: 'inputPeerPhotoFileLocation', big: false, peer,
+        photoId: Long.fromNumber(stableId(`avatar:${bundleAvatar.id}`)),
+      },
+    } as never)).resolves.toMatchObject({
+      _: 'upload.file', bytes: new TextEncoder().encode('bundle-avatar-bytes'),
+    })
+
+    // A deleted source takes its transcript with it.
+    await ctx.database.set('mtproto_im_message', { primaryPlatformMessageId: outerMessage.id }, { deleted: true })
+    await plugin.dispose()
+    plugin = ctx.plugin(mergedForward)
+    await plugin
+    const fallback: tl.RpcMethod[] = []
+    ctx.mtproto.register('contacts.resolveUsername', async (_rpc, request) => {
+      fallback.push(request)
+      return { _: 'contacts.resolvedPeer', peer: { _: 'peerUser', userId: 1 }, chats: [], users: [] }
+    })
+    await ctx.mtproto.dispatch(rpc, {
+      _: 'contacts.resolveUsername', username: `bridgebundle_${chatId}`,
+    } as never)
+    expect(fallback).toHaveLength(1)
   })
 })

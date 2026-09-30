@@ -20,6 +20,8 @@ interface BundleRecord {
   platformSessionId: string
   chatId: number
   bundle: IMMessageBundle
+  /** Durable address encoded in `chatId`; absent for process-local transcripts. */
+  address?: BundleAddress
   snapshots?: Promise<IMMessageSnapshot[]>
   /** Adapter-owned avatar of the chat the bundle was archived from. */
   avatar?: Promise<IMMedia<any> | undefined>
@@ -51,11 +53,126 @@ interface ProjectedBundle {
 }
 
 /**
- * Ephemeral feature-owned registry. It remembers only bundles encountered in
- * projected messages; it never restores virtual dialogs from MessageStore.
+ * Where a bundle lives: the durable message row that carries it and the path
+ * of bundle ordinals leading to it.  `path[0]` counts the bundle parts of the
+ * stored message; every further step counts the bundle parts of the parent
+ * transcript's archived messages, in the order the adapter returns them.
+ */
+export interface BundleAddress {
+  storedMessageId: number
+  path: number[]
+}
+
+/**
+ * Transcript chat ids start above every id the bridge allocates for ordinary
+ * peers and above the process-local fallback (`stableId` stays below 2^31),
+ * so an encoded bundle can never be mistaken for any other peer.
+ */
+const BUNDLE_CHAT_ID_BASE = 2 ** 31
+/** Low part of a transcript chat id that carries the encoded bundle path. */
+const BUNDLE_PATH_CODES = 1024
+/**
+ * Largest basic-group id every client accepts.  TDLib-based clients reject
+ * basic chat ids above 999999999999, the tightest bound among the clients
+ * Crossgram serves; this still leaves room for ~970 million stored messages.
+ */
+const MAX_BUNDLE_CHAT_ID = 999_999_999_999
+
+/**
+ * Transcript chat id that encodes its bundle address, so a relay restart can
+ * find the bundle again from nothing but the id a client already holds.
+ * Returns `undefined` when the address does not fit; such bundles fall back to
+ * the process-local id.
+ */
+export function encodeBundleChatId(address: BundleAddress): number | undefined {
+  const { storedMessageId, path } = address
+  if (!Number.isSafeInteger(storedMessageId) || storedMessageId <= 0) return
+  const code = encodeBundlePath(path)
+  if (code === undefined || code >= BUNDLE_PATH_CODES) return
+  const id = BUNDLE_CHAT_ID_BASE + storedMessageId * BUNDLE_PATH_CODES + code
+  return Number.isSafeInteger(id) && id <= MAX_BUNDLE_CHAT_ID ? id : undefined
+}
+
+/** Inverse of `encodeBundleChatId`; `undefined` for every other chat id. */
+export function decodeBundleChatId(chatId: number): BundleAddress | undefined {
+  if (!Number.isSafeInteger(chatId) || chatId > MAX_BUNDLE_CHAT_ID) return
+  const relative = chatId - BUNDLE_CHAT_ID_BASE
+  const storedMessageId = Math.floor(relative / BUNDLE_PATH_CODES)
+  if (storedMessageId <= 0) return
+  const path = decodeBundlePath(relative % BUNDLE_PATH_CODES)
+  return path ? { storedMessageId, path } : undefined
+}
+
+/**
+ * Packs a bundle path into a small integer: every ordinal is written as an
+ * Elias-gamma code of `ordinal + 1` behind a leading sentinel bit, and the
+ * result is shifted so the first bundle of a message, by far the common case,
+ * encodes as 0.  Nested bundles several levels deep still fit in ten bits.
+ */
+function encodeBundlePath(path: readonly number[]): number | undefined {
+  if (!path.length || path.some((ordinal) => !Number.isSafeInteger(ordinal) || ordinal < 0)) return
+  let bits = '1'
+  for (const ordinal of path) {
+    const binary = (ordinal + 1).toString(2)
+    bits += '0'.repeat(binary.length - 1) + binary
+    if (bits.length > 16) return
+  }
+  return parseInt(bits, 2) - 3
+}
+
+function decodeBundlePath(code: number): number[] | undefined {
+  const bits = (code + 3).toString(2).slice(1)
+  const path: number[] = []
+  let cursor = 0
+  while (cursor < bits.length) {
+    let zeros = 0
+    while (cursor + zeros < bits.length && bits[cursor + zeros] === '0') zeros++
+    const end = cursor + zeros * 2 + 1
+    if (end > bits.length) return
+    path.push(parseInt(bits.slice(cursor + zeros, end), 2) - 1)
+    cursor = end
+  }
+  return path.length && encodeBundlePath(path) === code ? path : undefined
+}
+
+/** Bundle parts of one message, in content order. */
+function bundleParts(parts: readonly { type: string }[]): IMMessageBundle[] {
+  return parts.flatMap((part) => part.type === 'message-bundle'
+    ? [(part as { type: 'message-bundle', bundle: IMMessageBundle }).bundle]
+    : [])
+}
+
+/**
+ * Nested bundles of a transcript: the bundle parts of every archived message,
+ * in archive order.  Their positions are the ordinals of nested bundle paths.
+ */
+function nestedBundles(snapshots: readonly IMMessageSnapshot[]): IMMessageBundle[] {
+  return snapshots.flatMap((snapshot) => bundleParts(snapshot.content.parts))
+}
+
+/** Session capabilities a transcript needs to rebuild itself after a restart. */
+export type BundleSessionState = Pick<BridgeSessionState, 'platform' | 'session'> & {
+  dialogs?: Partial<Pick<BridgeSessionState['dialogs'], 'readStoredMessage'>>
+}
+
+/** Addressed transcripts kept warm per session; any evicted one can be rebuilt. */
+const MAX_CACHED_RECORDS = 256
+/** Nested bundle addresses remembered per session while parents render. */
+const MAX_NESTED_ADDRESSES = 4096
+
+/**
+ * Feature-owned view of the bundles clients may open.  A transcript of a
+ * stored message is addressed by its row and bundle path, both encoded in the
+ * transcript chat id, so this registry is only a cache: every link a client
+ * holds can be rebuilt from MessageStore after a restart.  Bundles without a
+ * durable address (unstored sources, paths too long to encode) keep a
+ * process-local id and live only as long as the registry.
  */
 export class MergedForwardProjection {
   private readonly _records = new Map<string, Map<number, BundleRecord>>()
+  /** Addresses of nested bundles, keyed by bundle id, learnt while their parent renders. */
+  private readonly _nestedAddresses = new Map<string, Map<string, BundleAddress>>()
+  private readonly _rebuilds = new Map<string, Promise<BundleRecord | undefined>>()
   /** Synthetic peer photos this feature registered, scoped per session. */
   private readonly _avatars = new Map<string, SessionAvatars>()
   /** Every photo id this feature handed out, checked before resolving a session. */
@@ -85,31 +202,128 @@ export class MergedForwardProjection {
     }
   }
 
-  remember(platformSessionId: string, bundle: IMMessageBundle): BundleRecord {
-    const chatId = bundleChatId(bundle)
+  remember(platformSessionId: string, bundle: IMMessageBundle, address?: BundleAddress): BundleRecord {
+    const encoded = address ? encodeBundleChatId(address) : undefined
+    const chatId = encoded ?? bundleChatId(bundle)
     const records = this._records.get(platformSessionId) ?? new Map<number, BundleRecord>()
     const existing = records.get(chatId)
     if (existing?.bundle.id === bundle.id) {
       existing.bundle = bundle
+      // Recently used transcripts stay at the end of the eviction order.
+      records.delete(chatId)
+      records.set(chatId, existing)
       return existing
     }
-    const record = { platformSessionId, chatId, bundle }
+    const record: BundleRecord = {
+      platformSessionId, chatId, bundle,
+      ...(encoded !== undefined ? { address: { storedMessageId: address!.storedMessageId, path: [...address!.path] } } : {}),
+    }
     records.set(chatId, record)
     this._records.set(platformSessionId, records)
+    this.evict(records)
     return record
+  }
+
+  /**
+   * Keeps the registry bounded.  Only addressed transcripts are dropped: the
+   * id a client holds rebuilds them from MessageStore, whereas a process-local
+   * transcript would become unreachable.
+   */
+  private evict(records: Map<number, BundleRecord>): void {
+    let addressed = 0
+    for (const record of records.values()) if (record.address) addressed++
+    for (const [chatId, record] of records) {
+      if (addressed <= MAX_CACHED_RECORDS) break
+      if (!record.address) continue
+      records.delete(chatId)
+      addressed--
+    }
   }
 
   resolve(platformSessionId: string, chatId: number): BundleRecord | undefined {
     return this._records.get(platformSessionId)?.get(chatId)
   }
 
+  /**
+   * Transcript of one chat id: the cached record, or the bundle rebuilt from
+   * the stored message the id encodes.  This is what keeps links working
+   * across relay restarts.
+   */
+  async lookup(state: BundleSessionState, chatId: number): Promise<BundleRecord | undefined> {
+    const platformSessionId = state.session.platformSessionId
+    const cached = this.resolve(platformSessionId, chatId)
+    if (cached) return cached
+    const address = decodeBundleChatId(chatId)
+    if (!address || !state.dialogs?.readStoredMessage) return
+    const key = `${platformSessionId}\u0000${chatId}`
+    const running = this._rebuilds.get(key)
+    if (running) return running
+    const pending = this.rebuild(state, address)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this._rebuilds.get(key) === pending) this._rebuilds.delete(key)
+      })
+    this._rebuilds.set(key, pending)
+    return pending
+  }
+
+  /**
+   * Walks a bundle address from its stored message down to the bundle it
+   * names.  Nested steps load the parent transcript through the adapter, the
+   * same way opening the parent would.
+   */
+  private async rebuild(state: BundleSessionState, address: BundleAddress): Promise<BundleRecord | undefined> {
+    const source = await state.dialogs!.readStoredMessage!(address.storedMessageId)
+    if (!source) return
+    let bundle = bundleParts(source.content.parts)[address.path[0]!]
+    for (let depth = 1; bundle && depth < address.path.length; depth++) {
+      const parent = this.remember(state.session.platformSessionId, bundle, {
+        storedMessageId: address.storedMessageId, path: address.path.slice(0, depth),
+      })
+      bundle = nestedBundles(await this.loadSnapshots(state, parent))[address.path[depth]!]
+    }
+    if (!bundle) return
+    return this.remember(state.session.platformSessionId, bundle, address)
+  }
+
   records(platformSessionId: string): Iterable<BundleRecord> {
     return this._records.get(platformSessionId)?.values() ?? []
   }
 
-  resolveUsername(platformSessionId: string, username: string): BundleRecord | undefined {
-    const match = /^bridge(?:bundle|chat)_(\d+)$/.exec(username)
-    return match ? this.resolve(platformSessionId, Number(match[1])) : undefined
+  async resolveUsername(state: BundleSessionState, username: string): Promise<BundleRecord | undefined> {
+    const match = /^bridge(?:bundle|chat)_(\d+)$/i.exec(username)
+    return match ? this.lookup(state, Number(match[1])) : undefined
+  }
+
+  /**
+   * Durable address of a bundle part being projected.  Parts of a stored
+   * message are addressed by that row; bundles nested in a transcript inherit
+   * the address their parent registered while it rendered.
+   */
+  private addressOf(input: MessageProjectionInput, bundle: IMMessageBundle, ordinal: number): BundleAddress | undefined {
+    if (input.mode !== 'bundle') {
+      return input.storedMessageId ? { storedMessageId: input.storedMessageId, path: [ordinal] } : undefined
+    }
+    return this._nestedAddresses.get(input.session.platformSessionId)?.get(bundle.id)
+  }
+
+  /** Remembers where the bundles nested in a transcript live, before it renders them. */
+  private registerNested(record: BundleRecord, snapshots: readonly IMMessageSnapshot[]): void {
+    if (!record.address) return
+    const nested = nestedBundles(snapshots)
+    if (!nested.length) return
+    let addresses = this._nestedAddresses.get(record.platformSessionId)
+    if (!addresses) {
+      addresses = new Map()
+      this._nestedAddresses.set(record.platformSessionId, addresses)
+    }
+    for (const [index, bundle] of nested.entries()) {
+      addresses.delete(bundle.id)
+      addresses.set(bundle.id, {
+        storedMessageId: record.address.storedMessageId, path: [...record.address.path, index],
+      })
+    }
+    while (addresses.size > MAX_NESTED_ADDRESSES) addresses.delete(addresses.keys().next().value!)
   }
 
   async project(
@@ -123,8 +337,12 @@ export class MergedForwardProjection {
 
     const links = new Map<string, string>()
     const targets = new Map<string, number>()
-    for (const part of bundles) {
-      const record = this.remember(input.session.platformSessionId, part.bundle)
+    const records = new Map<string, BundleRecord>()
+    for (const [ordinal, part] of bundles.entries()) {
+      const record = this.remember(
+        input.session.platformSessionId, part.bundle, this.addressOf(input, part.bundle, ordinal),
+      )
+      records.set(part.bundle.id, record)
       const snapshots = await this.loadSnapshots(input, record)
       if (!record.bundle.preview?.trim()) {
         const preview = snapshotPreview(snapshots)
@@ -163,7 +381,7 @@ export class MergedForwardProjection {
     }
     if (!source.content.parts.some((part) =>
       part.type === 'media' || part.type === 'sticker' || part.type === 'card')) {
-      const record = this.resolve(input.session.platformSessionId, bundleChatId(bundles[0].bundle))
+      const record = records.get(bundles[0].bundle.id)
       if (record) {
         input.draft.media = this.makePreview(record, targets.get(bundles[0].bundle.id))
       }
@@ -331,6 +549,8 @@ export class MergedForwardProjection {
    * the merged-forward lookup.
    */
   mightServeLocation(location: tl.TypeInputFileLocation): boolean {
+    // A durable transcript can serve its photo even before it was rebuilt.
+    if (transcriptPhotoChatId(location) !== undefined) return true
     if (!this._photoIds.size) return false
     if (location._ === 'inputPeerPhotoFileLocation') {
       return this._photoIds.has(location.photoId.toString())
@@ -383,12 +603,17 @@ export class MergedForwardProjection {
 
   clear(): void {
     this._records.clear()
+    this._nestedAddresses.clear()
+    this._rebuilds.clear()
     this._avatars.clear()
     this._photoIds.clear()
   }
 
   private async buildProjection(state: BridgeSessionState, record: BundleRecord): Promise<ProjectedBundle> {
     const snapshots = await this.loadSnapshots(state, record)
+    // Nested bundles render through the projection waterfall below; they can
+    // only link to durable transcripts once their address is known.
+    this.registerNested(record, snapshots)
     const peer = { _: 'peerChat' as const, chatId: record.chatId }
     const replyIds = new Map(snapshots.map((snapshot) => [
       snapshot.id,
@@ -461,7 +686,17 @@ async function routeMergedForwardRpc(
     const offset = Number(req.offset)
     if (!Number.isFinite(offset) || offset < 0 || req.limit <= 0) return
     const state = await resolveState()
-    const entry = projection.resolveAvatarLocation(state.session.platformSessionId, req.location)
+    let entry = projection.resolveAvatarLocation(state.session.platformSessionId, req.location)
+    if (!entry) {
+      // A client may fetch the photo of a transcript it cached before a
+      // restart; rebuild that transcript so its avatar is registered again.
+      const chatId = transcriptPhotoChatId(req.location)
+      const record = chatId === undefined ? undefined : await projection.lookup(state, chatId)
+      if (record) {
+        projection.makeChat(record, [], await projection.loadAvatar(state, record))
+        entry = projection.resolveAvatarLocation(state.session.platformSessionId, req.location)
+      }
+    }
     if (!entry || !state.platform.downloadMedia) return
     const chunks: Uint8Array[] = []
     let size = 0
@@ -489,9 +724,9 @@ async function routeMergedForwardRpc(
   }
   if (request._ === 'contacts.resolveUsername') {
     const req = request as tl.contacts.RawResolveUsernameRequest
-    if (!/^bridge(?:bundle|chat)_\d+$/.test(req.username)) return
+    if (!/^bridge(?:bundle|chat)_\d+$/i.test(req.username)) return
     const state = await resolveState()
-    const record = projection.resolveUsername(state.session.platformSessionId, req.username)
+    const record = await projection.resolveUsername(state, req.username)
     if (!record) return
     const snapshots = await projection.loadSnapshots(state, record)
     return {
@@ -503,7 +738,7 @@ async function routeMergedForwardRpc(
   if (request._ === 'messages.getFullChat') {
     const req = request as tl.messages.RawGetFullChatRequest
     const state = await resolveState()
-    const record = projection.resolve(state.session.platformSessionId, req.chatId)
+    const record = await projection.lookup(state, req.chatId)
     if (!record) return
     return projection.makeFullChat(
       record,
@@ -523,7 +758,7 @@ async function routeMergedForwardRpc(
       | tl.messages.RawGetPeerSettingsRequest
     if (req.peer._ !== 'inputPeerChat') return
     const state = await resolveState()
-    const record = projection.resolve(state.session.platformSessionId, req.peer.chatId)
+    const record = await projection.lookup(state, req.peer.chatId)
     if (!record) return
     if (request._ === 'messages.readHistory') {
       return { _: 'messages.affectedMessages', pts: 0, ptsCount: 0 }
@@ -562,11 +797,11 @@ async function routeMergedForwardRpc(
   if (request._ === 'messages.getPeerDialogs') {
     const state = await resolveState()
     const req = request as tl.messages.RawGetPeerDialogsRequest
-    const records = req.peers.flatMap((item, index) => {
-      if (item._ !== 'inputDialogPeer' || item.peer._ !== 'inputPeerChat') return []
-      const record = projection.resolve(state.session.platformSessionId, item.peer.chatId)
-      return record ? [{ index, record }] : []
-    })
+    const records = (await Promise.all(req.peers.map(async (item, index) => {
+      if (item._ !== 'inputDialogPeer' || item.peer._ !== 'inputPeerChat') return undefined
+      const record = await projection.lookup(state, item.peer.chatId)
+      return record ? { index, record } : undefined
+    }))).filter((entry): entry is { index: number, record: BundleRecord } => entry !== undefined)
     if (!records.length) return
     const virtualIndexes = new Set(records.map((entry) => entry.index))
     const ordinaryPeers = req.peers.filter((_item, index) => !virtualIndexes.has(index))
@@ -749,6 +984,12 @@ const BUNDLE_PHOTO_FILE_REFERENCE = new TextEncoder().encode('crossgram-merged-f
 /** Registry key of one synthetic peer photo. */
 function peerKey(peer: AvatarPeer, photoId: Long): string {
   return `${peer.kind}:${peer.id}:${photoId.toString()}`
+}
+
+/** Durable transcript whose peer photo a file location asks for, if any. */
+function transcriptPhotoChatId(location: tl.TypeInputFileLocation): number | undefined {
+  if (location._ !== 'inputPeerPhotoFileLocation' || location.peer._ !== 'inputPeerChat') return
+  return decodeBundleChatId(location.peer.chatId) ? location.peer.chatId : undefined
 }
 
 /** Registry peer of a Telegram file location, when it addresses a chat peer. */

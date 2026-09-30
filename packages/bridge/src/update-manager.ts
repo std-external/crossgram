@@ -857,6 +857,7 @@ export class UpdateManager {
             },
             tlMessageId: part.tlMessageId,
             ordinal: part.ordinal,
+            storedMessageId: part.messageId,
             draft,
           }, fallback)
         : await fallback()

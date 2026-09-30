@@ -105,6 +105,8 @@ interface MaterializedMessage {
   source: IMMessage
   tlId: number
   ordinal: number
+  /** Durable `mtproto_im_message` row id when the source is stored. */
+  storedMessageId?: number
   groupedId?: string
   media?: IMMediaRow
   mediaRows?: IMMediaRow[]
@@ -411,6 +413,7 @@ export class DialogRpc {
           source: stored.source,
           tlId: part.tlMessageId,
           ordinal: part.ordinal,
+          storedMessageId: part.messageId,
           groupedId: part.groupedId ?? undefined,
           media: stored.media.find((entry) => entry.id === part.mediaId),
           mediaRows: stored.media,
@@ -467,6 +470,15 @@ export class DialogRpc {
       profileMilliseconds(totalMs),
     )
     return result as unknown as tl.messages.TypeDialogs
+  }
+
+  /**
+   * Source of one durable message row of this session.  Virtual features that
+   * address their peers by stored message use it to rebuild those peers after
+   * a restart instead of keeping a process-local registry.
+   */
+  async readStoredMessage(storedMessageId: number): Promise<IMMessage | undefined> {
+    return this._store?.readMessageByRowId(this._session.platformSessionId, storedMessageId)
   }
 
   async getPeerDialogs(req: GetPeerDialogsRequest): Promise<tl.messages.RawPeerDialogs> {
@@ -1012,6 +1024,7 @@ export class DialogRpc {
             source: projected.source,
             tlId: part.tlMessageId,
             ordinal: part.ordinal,
+            storedMessageId: part.messageId,
             groupedId: part.groupedId ?? undefined,
             media: projected.media.find((entry) => entry.id === part.mediaId),
             mediaRows: projected.media,
@@ -1112,6 +1125,7 @@ export class DialogRpc {
                 source: projected.source,
                 tlId: part.tlMessageId,
                 ordinal: part.ordinal,
+                storedMessageId: part.messageId,
                 groupedId: part.groupedId ?? undefined,
                 media: projected.media.find((entry) => entry.id === part.mediaId),
                 mediaRows: projected.media,
@@ -1134,6 +1148,7 @@ export class DialogRpc {
             source: projected.source,
             tlId: part.tlMessageId,
             ordinal: part.ordinal,
+            storedMessageId: part.messageId,
             groupedId: part.groupedId ?? undefined,
             media: projected.media.find((entry) => entry.id === part.mediaId),
             mediaRows: projected.media,
@@ -3480,6 +3495,7 @@ export class DialogRpc {
         source: projected.source,
         tlId: part.tlMessageId,
         ordinal: part.ordinal,
+        storedMessageId: part.messageId,
         groupedId: part.groupedId ?? undefined,
         media: projected.media.find((entry) => entry.id === part.mediaId),
         mediaRows: projected.media,
@@ -3598,7 +3614,7 @@ export class DialogRpc {
     const part = projected.parts.find((entry) => entry.tlMessageId === tlMessageId)
     if (!part) throw new RpcError(500, 'MESSAGE_PROJECTION_NOT_FOUND')
     const item: MaterializedMessage = {
-      source: projected.source, tlId: part.tlMessageId, ordinal: part.ordinal,
+      source: projected.source, tlId: part.tlMessageId, ordinal: part.ordinal, storedMessageId: part.messageId,
       groupedId: part.groupedId ?? undefined,
       media: projected.media.find((entry) => entry.id === part.mediaId),
       mediaRows: projected.media,
@@ -3693,6 +3709,7 @@ export class DialogRpc {
         source: stored.source,
         tlId: part.tlMessageId,
         ordinal: part.ordinal,
+        storedMessageId: part.messageId,
         groupedId: part.groupedId ?? undefined,
         media: stored.media.find((entry) => entry.id === part.mediaId),
         mediaRows: stored.media,
@@ -3714,6 +3731,7 @@ export class DialogRpc {
           source: stored.source,
           tlId: part.tlMessageId,
           ordinal: part.ordinal,
+          storedMessageId: part.messageId,
           groupedId: part.groupedId ?? undefined,
           media: stored.media.find((entry) => entry.id === part.mediaId),
           mediaRows: stored.media,
@@ -3843,6 +3861,7 @@ export class DialogRpc {
             source,
             tlId: part.tlMessageId,
             ordinal: part.ordinal,
+            storedMessageId: part.messageId,
             groupedId: part.groupedId ?? undefined,
             media: media.find((entry) => entry.id === part.mediaId),
             mediaRows: media,
@@ -4386,6 +4405,7 @@ export class DialogRpc {
       },
       tlMessageId: tlId,
       ordinal: item.ordinal,
+      storedMessageId: item.storedMessageId,
       draft,
     }, fallback)
   }
@@ -4482,6 +4502,7 @@ export class DialogRpc {
       source: projected.source,
       tlId: part.tlMessageId,
       ordinal: part.ordinal,
+      storedMessageId: part.messageId,
       groupedId: part.groupedId ?? undefined,
       media: projected.media.find((entry) => entry.id === part.mediaId),
       mediaRows: projected.media,
@@ -4616,6 +4637,7 @@ export class DialogRpc {
         source,
         tlId: part.tlMessageId,
         ordinal: part.ordinal,
+        storedMessageId: part.messageId,
         groupedId: part.groupedId ?? undefined,
         media: media.find((entry) => entry.id === part.mediaId),
         mediaRows: media,
@@ -5414,6 +5436,7 @@ export class DialogRpc {
       source,
       tlId: part.tlMessageId,
       ordinal: part.ordinal,
+      storedMessageId: part.messageId,
       groupedId: part.groupedId ?? undefined,
       media: media.find((entry) => entry.id === part.mediaId),
       mediaRows: media,

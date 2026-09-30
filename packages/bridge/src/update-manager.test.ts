@@ -186,6 +186,12 @@ describe('UpdateManager', () => {
     await manager.publish(session, { event: { type: 'message', conversation, message }, result })
 
     expect(middleware).toHaveBeenCalledOnce()
+    // Features addressing virtual peers by stored message receive its row.
+    expect(middleware.mock.calls[0]![0]).toMatchObject({ storedMessageId: result.message.id })
+    await expect(store.readMessageByRowId(session.platformSessionId, result.message.id))
+      .resolves.toMatchObject({ id: message.id, conversationId: conversation.id })
+    await expect(store.readMessageByRowId('other-session', result.message.id)).resolves.toBeUndefined()
+    await expect(store.readMessageByRowId(session.platformSessionId, 0)).resolves.toBeUndefined()
     expect(sent[0].update).toMatchObject({
       updates: [{ message: { _: 'message', message: 'projected live message' } }],
     })

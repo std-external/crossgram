@@ -45,6 +45,13 @@ export interface MessageProjectionInput {
   }
   tlMessageId: number
   ordinal: number
+  /**
+   * Durable `mtproto_im_message` row that holds the source, when it is
+   * stored.  Features that derive virtual peers from message content encode
+   * it in their addresses so a restart can find the content again without
+   * any process-local registry.
+   */
+  storedMessageId?: number
   draft: MessageProjectionDraft
 }
 

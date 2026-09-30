@@ -80,9 +80,9 @@ describe('merged-forward projection', () => {
     expect(projection.makeChat(record)).toMatchObject({
       _: 'chat', left: true, id: chatId, title: bundle.title,
     })
-    expect(projection.resolveUsername(session.platformSessionId, `bridgebundle_${chatId}`)).toBe(record)
-    expect(projection.resolveUsername(session.platformSessionId, `bridgechat_${chatId}`)).toBe(record)
-    expect(projection.resolveUsername(session.platformSessionId, 'bridgebundle_999')).toBeUndefined()
+    expect(await projection.resolveUsername({ platform: platform(), session }, `bridgebundle_${chatId}`)).toBe(record)
+    expect(await projection.resolveUsername({ platform: platform(), session }, `bridgechat_${chatId}`)).toBe(record)
+    expect(await projection.resolveUsername({ platform: platform(), session }, 'bridgebundle_999')).toBeUndefined()
   })
 
   it('anchors the deep link at the first bundle message instead of the newest one', async () => {
