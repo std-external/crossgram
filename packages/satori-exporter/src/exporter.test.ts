@@ -588,7 +588,6 @@ describe('SatoriExporter', () => {
 
   it.each([
     'http://outside.test/asset',
-    'https://outside.test/asset',
     'http://localhost/asset',
     'https://[64:ff9b::7f00:1]/asset',
     'file:///etc/passwd',
@@ -601,6 +600,31 @@ describe('SatoriExporter', () => {
 
     await expect(sourceBytes(source)).rejects.toThrow('unsupported media source')
     expect(get).not.toHaveBeenCalled()
+  })
+
+  it('streams HTTPS media and reopens the URL for each consumption', async () => {
+    const { ctx, platform } = await createExporter()
+    const get = vi.spyOn(ctx.http, 'get').mockResolvedValue(
+      Readable.from([Buffer.from([4, 5]), Buffer.from([6])]) as never,
+    )
+
+    await ctx.bots[0]!.createMessage('group:42', [h.img('https://outside.test/asset', { width: 2, height: 3 })])
+    const source = (platform.sendMessage.mock.calls[0]![2].parts[0] as Extract<IMMessageInput['parts'][number], { type: 'media' }>).media.source!
+
+    expect(Array.from(await sourceBytes(source))).toEqual([4, 5, 6])
+    expect(Array.from(await sourceBytes(source))).toEqual([4, 5, 6])
+    expect(get).toHaveBeenNthCalledWith(1, 'https://outside.test/asset', { responseType: 'stream', signal: undefined })
+    expect(get).toHaveBeenNthCalledWith(2, 'https://outside.test/asset', { responseType: 'stream', signal: undefined })
+  })
+
+  it('enforces the configured size limit while streaming HTTPS media', async () => {
+    const { ctx, platform } = await createExporter({ maxMediaBytes: 2 })
+    vi.spyOn(ctx.http, 'get').mockResolvedValue(Readable.from([Buffer.from([1, 2, 3])]) as never)
+
+    await ctx.bots[0]!.createMessage('group:42', [h.img('https://outside.test/asset', { width: 1, height: 1 })])
+    const source = (platform.sendMessage.mock.calls[0]![2].parts[0] as Extract<IMMessageInput['parts'][number], { type: 'media' }>).media.source!
+
+    await expect(sourceBytes(source)).rejects.toThrow('Satori media exceeds size limit')
   })
 
   it('reopens base64 data media for each stream consumption', async () => {

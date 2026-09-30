@@ -414,7 +414,7 @@ function hasSendableContent(input: IMMessageInput): boolean {
 function mediaSource(ctx: Context, src: string, size: number | undefined, maxBytes: number) {
   return {
     size,
-    async *stream() {
+    async *stream(options?: { signal?: AbortSignal }) {
       if (src.startsWith('internal:')) {
         const file = await ctx.http.file(src)
         const bytes = new Uint8Array(file.data)
@@ -426,7 +426,22 @@ function mediaSource(ctx: Context, src: string, size: number | undefined, maxByt
         yield dataMediaBytes(src, maxBytes)
         return
       }
-      throw new Error('unsupported media source')
+      let url: URL
+      try {
+        url = new URL(src)
+      } catch {
+        throw new Error('unsupported media source')
+      }
+      if (url.protocol !== 'https:') throw new Error('unsupported media source')
+      const stream = await ctx.http.get(url, { responseType: 'stream', signal: options?.signal })
+      let transferredBytes = 0
+      for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+        transferredBytes += bytes.byteLength
+        if (transferredBytes > maxBytes) throw new Error('Satori media exceeds size limit')
+        yield bytes
+      }
+      return
     },
   }
 }
