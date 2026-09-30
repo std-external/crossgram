@@ -2093,6 +2093,63 @@ describe('conversation kinds', () => {
     })
   })
 
+  it('clicks bot buttons on the message of the tapped group even when another group reuses its id', async () => {
+    const menuGroup: IMConversation = { id: 'menu-group', kind: 'group', title: 'Menu Group', selfRole: 'member' }
+    const otherGroup: IMConversation = { id: 'other-group', kind: 'group', title: 'Other Group', selfRole: 'member' }
+    // Channel message ids come from QQ msgSeq, so unrelated groups collide.
+    const plain: IMMessage = {
+      id: 'plain', conversationId: otherGroup.id, senderId: 'alice', timestamp: 10,
+      content: { parts: [{ type: 'text', text: '我还没试过' }] },
+      metadata: { qqMsgSeq: '5000', telegramMessageId: 5000 },
+    }
+    const menu: IMMessage = {
+      id: 'menu', conversationId: menuGroup.id, senderId: 'bot', timestamp: 20,
+      content: {
+        parts: [{ type: 'text', text: '卫戍协议控制台' }],
+        inlineKeyboard: { rows: [{ buttons: [{
+          type: 'callback', text: '服务器状态', data: 'BOT1.0_status',
+          metadata: { qqnt: { id: 'ac.status', botAppid: '102106848' } },
+        }] }] },
+      },
+      metadata: { qqMsgSeq: '5000', telegramMessageId: 5000 },
+    }
+    const byId = new Map([[plain.id, plain], [menu.id, menu]])
+    const clickInlineButton = vi.fn(async () => ({ message: '已发送', alert: false }))
+    const clickPlatform: IMPlatform = {
+      ...platform,
+      async getDialogs() {
+        return { dialogs: [
+          // The unrelated message is materialized last and wins the TL-id cache.
+          { conversation: menuGroup, unreadCount: 0, lastMessage: menu },
+          { conversation: otherGroup, unreadCount: 0, lastMessage: plain },
+        ] }
+      },
+      async getHistory(_session, target) {
+        return { messages: [...byId.values()].filter((message) => message.conversationId === target.id) }
+      },
+      async getMessage(_session, _target, id) { return byId.get(id) ?? null },
+      clickInlineButton,
+    }
+    const { rpc } = await createRpc(clickPlatform)
+    const dialogs = await rpc.getDialogs(dialogsRequest()) as tl.messages.RawDialogs
+    const ids = dialogs.messages.map((message) => message.id)
+    expect(ids[0]).toBe(ids[1])
+    const msgId = ids[0]!
+
+    const peer = { _: 'inputPeerChannel' as const, channelId: rpc.peerTlId('menu-group'), accessHash: Long.ZERO }
+    await expect(rpc.getBotCallbackAnswer({
+      _: 'messages.getBotCallbackAnswer', peer, msgId, data: Buffer.from('BOT1.0_status'),
+    })).resolves.toEqual({ _: 'messages.botCallbackAnswer', message: '已发送', cacheTime: 0 })
+    expect(clickInlineButton).toHaveBeenCalledWith(session, {
+      conversationId: 'menu-group', messageId: 'menu', nativeSequence: '5000',
+    }, expect.objectContaining({ data: 'BOT1.0_status' }))
+
+    const otherPeer = { _: 'inputPeerChannel' as const, channelId: rpc.peerTlId('other-group'), accessHash: Long.ZERO }
+    await expect(rpc.getBotCallbackAnswer({
+      _: 'messages.getBotCallbackAnswer', peer: otherPeer, msgId, data: Buffer.from('BOT1.0_status'),
+    })).rejects.toMatchObject({ code: 400, text: 'DATA_INVALID' })
+  })
+
   it('projects read-only groups with explicit send restrictions', async () => {
     const readOnlyGroup: IMConversation = {
       id: 'read-only-group', kind: 'group', title: 'Read-only Group', selfRole: 'member',

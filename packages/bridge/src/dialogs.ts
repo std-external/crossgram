@@ -1833,22 +1833,24 @@ export class DialogRpc {
       }
     }
     if (!this._platform.clickInlineButton) throw new RpcError(400, 'BOT_RESPONSE_TIMEOUT')
-    const target = this._tlToMessage.get(req.msgId)
-      ?? await this._store?.findProjectedByTlId(this._session.platformSessionId, req.msgId)
-        .then((projected) => projected ? {
-          peerId: projected.source.conversationId,
-          platformMessageId: projected.source.id,
-          ordinal: 0,
-          nativeSequence: qqMessageSequenceFromMetadata(projected.source.metadata)?.toString(),
-        } : undefined)
-    if (!target) throw new RpcError(400, 'MESSAGE_ID_INVALID')
-    const conversation = this._conversation(conversationId)
-    if (conversation.id !== target.peerId && conversation.parentId !== target.peerId) {
+    // Channel message ids are only unique per channel: the same TL id names
+    // unrelated messages in other groups, so resolve it inside this peer.
+    const remembered = this._tlToMessage.get(req.msgId)
+    const peerProjection = remembered && this._belongsToDisplayPeer(remembered.peerId, conversationId)
+      ? undefined
+      : projected ?? await this._findPeerProjection(conversationId, req.msgId)
+    const target: MessageRef | undefined = peerProjection ? {
+      peerId: peerProjection.source.conversationId,
+      platformMessageId: peerProjection.source.id,
+      ordinal: 0,
+      nativeSequence: qqMessageSequenceFromMetadata(peerProjection.source.metadata)?.toString(),
+    } : remembered
+    if (!target || !this._belongsToDisplayPeer(target.peerId, conversationId)) {
       throw new RpcError(400, 'MESSAGE_ID_INVALID')
     }
     const message = await this._platform.getMessage?.(
       this._session, { id: target.peerId }, target.platformMessageId,
-    )
+    ) ?? peerProjection?.source
     const button = message?.content.inlineKeyboard?.rows
       .flatMap((row) => row.buttons)
       .find((candidate) => candidate.type === 'callback' && candidate.data === data)
@@ -5781,7 +5783,26 @@ export class DialogRpc {
     )
   }
 
+  private _belongsToDisplayPeer(messagePeerId: string, displayConversationId: string): boolean {
+    if (messagePeerId === displayConversationId) return true
+    if (this._conversations.get(messagePeerId)?.parentId === displayConversationId) return true
+    return this._conversation(displayConversationId).parentId === messagePeerId
+  }
+
   private async _findReadProjection(
+    displayConversationId: string,
+    tlMessageId: number,
+  ): Promise<ProjectedMessage | undefined> {
+    if (!this._store) return
+    const scoped = await this._findPeerProjection(displayConversationId, tlMessageId)
+    if (scoped) return scoped
+    // Preserve compatibility with partially hydrated parent-channel views;
+    // the caller still validates that this result belongs to the display peer.
+    return this._store.findProjectedByTlId(this._session.platformSessionId, tlMessageId)
+  }
+
+  /** Finds a TL message id inside one display peer or its topics, never elsewhere. */
+  private async _findPeerProjection(
     displayConversationId: string,
     tlMessageId: number,
   ): Promise<ProjectedMessage | undefined> {
@@ -5797,9 +5818,6 @@ export class DialogRpc {
       )
       if (child) return child
     }
-    // Preserve compatibility with partially hydrated parent-channel views;
-    // the caller still validates that this result belongs to the display peer.
-    return this._store.findProjectedByTlId(this._session.platformSessionId, tlMessageId)
   }
 }
 
