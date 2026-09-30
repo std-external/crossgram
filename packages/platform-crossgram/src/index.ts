@@ -2558,7 +2558,7 @@ function wireMultiForwardPreview(messages: readonly WireMessage[]): string | und
         || (part.media.kind === 'image' ? '[图片]' : '[文件]')
       if (part.type === 'sticker') return part.sticker.title?.trim() || '[表情]'
       if (part.type === 'multi-forward') return `查看${part.title || '聊天记录'}`
-      if (part.type === 'markdown') return part.content.trim()
+      if (part.type === 'markdown') return parseQQMarkdown(part.content).text
       if (part.type === 'inline-keyboard') return part.keyboard.rows
         .flatMap((row) => row.buttons.map((button) => button.label)).join(' ')
       return part.card.title?.trim() || part.card.description?.trim() || '[卡片消息]'
@@ -2769,8 +2769,14 @@ function mapParts(
   projectMedia?: (media: IMMedia<QQMediaLocator>) => IMMedia<QQMediaLocator>,
 ): IMMessage<QQMediaLocator>['content']['parts'] {
   const parts: IMMessage<QQMediaLocator>['content']['parts'] = []
+  // QQ bot messages carry a plain-text fallback beside the markdown body for
+  // clients without markdown support; QQ itself only renders the markdown.
+  const markdownText = input.parts
+    .flatMap((part) => part.type === 'markdown' ? [compactText(parseQQMarkdown(part.content).text)] : [])
+    .join('')
   for (const part of input.parts) {
     if (part.type === 'text') {
+      if (markdownText && !part.entities?.length && markdownText.includes(compactText(part.text))) continue
       const normalized = normalizeTextPart(part, reactionCatalog)
       const previous = parts.at(-1)
       if (previous?.type === 'text') {
@@ -2827,6 +2833,10 @@ function mapParts(
   return parts
 }
 
+function compactText(value: string): string {
+  return value.replace(/\s+/g, '')
+}
+
 export function parseQQMarkdown(content: string): Extract<
   IMMessage<QQMediaLocator>['content']['parts'][number],
   { type: 'text' }
@@ -2838,37 +2848,57 @@ export function parseQQMarkdown(content: string): Extract<
     text.push(value)
     return offset
   }
-  const token = /```([^\n`]*)\n([\s\S]*?)```|`([^`\n]+)`|\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_|~~([^~\n]+)~~/g
+  const token = /\\([\\`*_{}[\]()#+\-.!>~|])|```([^\n`]*)\n([\s\S]*?)```|`([^`\n]+)`|\[([^\]\n]*)\]\(([^)\s]*)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_|~~([^~\n]+)~~|^#{1,6}[ \t]+([^\n]+)$/gm
   let cursor = 0
   for (const match of content.matchAll(token)) {
     const index = match.index
     append(content.slice(cursor, index))
-    if (match[2] !== undefined) {
-      const offset = append(match[2])
-      entities.push({ type: 'pre', offset, length: match[2].length, language: match[1] || undefined })
+    if (match[1] !== undefined) {
+      append(match[1])
     } else if (match[3] !== undefined) {
       const offset = append(match[3])
-      entities.push({ type: 'code', offset, length: match[3].length })
+      entities.push({ type: 'pre', offset, length: match[3].length, language: match[2] || undefined })
     } else if (match[4] !== undefined) {
       const offset = append(match[4])
-      entities.push({ type: 'text-link', offset, length: match[4].length, url: match[5] })
-    } else if (match[6] !== undefined || match[7] !== undefined) {
-      const value = match[6] ?? match[7]
+      entities.push({ type: 'code', offset, length: match[4].length })
+    } else if (match[5] !== undefined) {
+      // QQ bot frameworks prepend an empty-label link carrying template
+      // metadata such as `[](%7B%22version%22%3A2%7D)`; QQ renders nothing.
+      const label = match[5]
+      if (label) {
+        const offset = append(label)
+        if (/^https?:\/\//i.test(match[6])) {
+          entities.push({ type: 'text-link', offset, length: label.length, url: match[6] })
+        }
+      }
+    } else if (match[7] !== undefined || match[8] !== undefined) {
+      const value = match[7] ?? match[8]
       const offset = append(value)
       entities.push({ type: 'bold', offset, length: value.length })
-    } else if (match[8] !== undefined || match[9] !== undefined) {
-      const value = match[8] ?? match[9]
+    } else if (match[9] !== undefined || match[10] !== undefined) {
+      const value = match[9] ?? match[10]
       const offset = append(value)
       entities.push({ type: 'italic', offset, length: value.length })
-    } else if (match[10] !== undefined) {
-      const offset = append(match[10])
-      entities.push({ type: 'strikethrough', offset, length: match[10].length })
+    } else if (match[11] !== undefined) {
+      const offset = append(match[11])
+      entities.push({ type: 'strikethrough', offset, length: match[11].length })
+    } else if (match[12] !== undefined) {
+      const value = match[12].trim()
+      const offset = append(value)
+      if (value) entities.push({ type: 'bold', offset, length: value.length })
     }
     cursor = index + match[0].length
   }
   append(content.slice(cursor))
-  const rendered = text.join('')
-  return { type: 'text', text: rendered, entities: entities.length ? entities : undefined }
+  const joined = text.join('')
+  const rendered = joined.trim()
+  const lead = joined.length - joined.trimStart().length
+  const trimmed = entities.flatMap((entity) => {
+    const start = Math.max(0, entity.offset - lead)
+    const end = Math.min(rendered.length, entity.offset + entity.length - lead)
+    return end > start ? [{ ...entity, offset: start, length: end - start }] : []
+  })
+  return { type: 'text', text: rendered, entities: trimmed.length ? trimmed : undefined }
 }
 
 function isRemoteQQMediaLocator(value: unknown): value is QQMediaLocator {

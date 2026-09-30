@@ -237,6 +237,58 @@ describe('QQNTPlatform mapping', () => {
       buttonId: 'confirm', callbackData: 'confirm:42', botAppid: '1024',
     })
   })
+
+  it('drops QQ bot template metadata links, escapes and the plain-text fallback', async () => {
+    expect(parseQQMarkdown('[](%7B%22version%22%3A2%7D)\n\n卫戍协议控制台\n私聊 /token 可获取设置页 JWT。\n')).toEqual({
+      type: 'text', text: '卫戍协议控制台\n私聊 /token 可获取设置页 JWT。', entities: undefined,
+    })
+    expect(parseQQMarkdown('\n# 标题\n1\\. a\\_b [x](javascript:alert) **粗**')).toEqual({
+      type: 'text',
+      text: '标题\n1. a_b x 粗',
+      entities: [
+        { type: 'bold', offset: 0, length: 2 },
+        { type: 'bold', offset: 12, length: 1 },
+      ],
+    })
+
+    const platform = new QQNTPlatform()
+    platform.client.getHistory = vi.fn(async () => ({
+      messages: [{
+        id: 'bot-menu', conversationId: 'group', senderId: 'bot', timestamp: 1, outgoing: false,
+        // Production order: keyboard, markdown body, then QQ's plain-text fallback.
+        parts: [
+          { type: 'inline-keyboard' as const, keyboard: {
+            botAppid: '102106848',
+            rows: [{ buttons: [{
+              id: 'ac.status', label: '服务器状态', visitedLabel: '服务器状态', style: 1, type: 1,
+              clickLimit: 0, unsupportTips: '', data: 'BOT1.0_status',
+              atBotShowChannelList: false, permissionType: 2, specifyRoleIds: [], specifyTinyids: [],
+            }] }],
+          } },
+          { type: 'markdown' as const, content: '[](%7B%22version%22%3A2%7D)\n\n卫戍协议控制台\n私聊 /token 可获取设置页 JWT。\n' },
+          { type: 'text' as const, text: '卫戍协议控制台\n私聊 /token 可获取设置页 JWT。' },
+        ],
+      }, {
+        id: 'bot-extra', conversationId: 'group', senderId: 'bot', timestamp: 2, outgoing: false,
+        parts: [
+          { type: 'markdown' as const, content: '**菜单**' },
+          { type: 'text' as const, text: '额外说明' },
+        ],
+      }],
+    }))
+    const [menu, extra] = (await platform.getHistory(session, { id: 'group' })).messages
+    expect(menu.content.parts).toEqual([
+      { type: 'text', text: '卫戍协议控制台\n私聊 /token 可获取设置页 JWT。', entities: undefined },
+    ])
+    expect(menu.content.inlineKeyboard?.rows[0].buttons[0]).toMatchObject({
+      type: 'callback', text: '服务器状态', data: 'BOT1.0_status', style: 'primary',
+    })
+    // Text that is not the markdown's fallback is kept (adjacent text merges).
+    expect(extra.content.parts).toEqual([
+      { type: 'text', text: '菜单额外说明', entities: [{ type: 'bold', offset: 0, length: 2 }] },
+    ])
+  })
+
   it('uses the service environment token unless configuration overrides it', async () => {
     vi.stubEnv('QQNT_BRIDGE_TOKEN', 'service-token')
     const authorizations: Array<string | null> = []
