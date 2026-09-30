@@ -28,9 +28,16 @@ export function apply(ctx: Context, config: Config): void {
       else exporter.stop(binding.registrationId)
     })
     scope.imPlatform.onCommittedEvent((session, committed) => {
-      if (committed.event.type !== 'message') return
-      const message = committed as Extract<CommittedPlatformEvent, { event: { type: 'message' } }>
-      exporter.handleMessage(session, message.event.conversation, message.event.message, message.result)
+      if (committed.event.type === 'message') {
+        const message = committed as Extract<CommittedPlatformEvent, { event: { type: 'message' } }>
+        exporter.handleMessage(session, message.event.conversation, message.event.message, message.result)
+      } else if (committed.event.type === 'message-delete') {
+        const deleted = committed as Extract<CommittedPlatformEvent, { event: { type: 'message-delete' } }>
+        exporter.handleDelete(session, deleted.event.conversation, deleted.event.messageIds, deleted.event.timestamp * 1_000)
+      } else if (committed.event.type === 'message-edit' && committed.event.message.recalled) {
+        const edited = committed as Extract<CommittedPlatformEvent, { event: { type: 'message-edit' } }>
+        exporter.handleDelete(session, edited.event.conversation, [edited.event.message.id], edited.event.message.timestamp * 1_000)
+      }
     })
     return () => exporter.stop()
   })

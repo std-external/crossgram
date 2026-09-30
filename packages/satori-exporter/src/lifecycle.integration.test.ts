@@ -99,6 +99,9 @@ describe('standalone Satori exporter lifecycle', () => {
       received.push(event.event.message!.id)
       authors.push(event.author)
     })
+    const deleted: string[] = []
+    ctx.on('message-deleted', (event) => { deleted.push(event.event.message!.id!) })
+
     await platform.emit({
       type: 'message',
       conversation: { id: 'group:42', kind: 'group', title: 'Group 42' },
@@ -110,6 +113,13 @@ describe('standalone Satori exporter lifecycle', () => {
       },
     })
     await vi.waitFor(() => expect(received).toEqual(['incoming:1']))
+    await platform.emit({
+      type: 'message-delete', eventId: 'recall:1',
+      conversation: { id: 'group:42', kind: 'group', title: 'Group 42' },
+      messageIds: ['incoming:1'], timestamp: 2,
+    })
+    await vi.waitFor(() => expect(deleted).toEqual(['incoming:1']))
+
     expect(authors).toMatchObject([{
       id: 'alice', username: 'Alice', nickname: '群名片', avatar: 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640',
     }])

@@ -61,6 +61,12 @@ class TestPlatform implements IMPlatform {
     id: 'sent:1', conversationId: conversation.id, senderId: 'self', timestamp: 1_700_000_001,
     outgoing: true, content: content as IMMessage['content'],
   }))
+  readonly deleteMessages = vi.fn(async (
+    _session: PlatformSession,
+    _conversation: { id: string },
+    _messageIds: readonly string[],
+    _options: { forEveryone: boolean },
+  ): Promise<void> => {})
 }
 
 async function createExporter(satori: Partial<SatoriExportConfig> = {}, activeSession = session) {
@@ -170,6 +176,20 @@ describe('SatoriExporter', () => {
     expect(events[1]?.event.guild).toBeUndefined()
     expect(platform.subscribe).not.toHaveBeenCalled()
   })
+  it('dispatches message-deleted for committed platform deletions', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-deleted', (event) => { events.push(event) })
+    const group: IMConversation = { id: 'group:42', kind: 'group', spaceId: 'guild:7', title: 'QQ Group' }
+
+    exporter.handleDelete(session, group, ['m1', 'm2'], 1_700_000_002_000)
+
+    expect(events.map((event) => event.event)).toMatchObject([
+      { type: 'message-deleted', timestamp: 1_700_000_002_000, channel: { id: group.id }, guild: { id: group.spaceId }, message: { id: 'm1' } },
+      { type: 'message-deleted', timestamp: 1_700_000_002_000, channel: { id: group.id }, guild: { id: group.spaceId }, message: { id: 'm2' } },
+    ])
+  })
+
 
   it('exposes the sender avatar and group card through session.author', async () => {
     const { ctx, exporter, platform } = await createExporter()
@@ -1418,6 +1438,21 @@ describe('SatoriExporter', () => {
     await expect(created.json()).resolves.toMatchObject([{ id: 'sent:1', channel: { id: 'group:42' } }])
     expect(platform.sendMessage).toHaveBeenCalledWith(
       session, { id: 'group:42' }, { parts: [{ type: 'text', text: 'hello from Koishi' }] },
+    )
+    const deleted = await fetch(new URL('/satori/v1/message.delete', ctx.server.baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+        'satori-platform': 'qq',
+        'satori-user-id': 'self',
+      },
+      body: JSON.stringify({ channel_id: 'group:42', message_id: 'sent:1' }),
+    })
+    expect(deleted.status).toBe(200)
+    await expect(deleted.text()).resolves.toBe('')
+    expect(platform.deleteMessages).toHaveBeenCalledWith(
+      session, { id: 'group:42' }, ['sent:1'], { forEveryone: true },
     )
   })
 })

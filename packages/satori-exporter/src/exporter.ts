@@ -131,6 +131,34 @@ export class SatoriExporter {
       )
     })
   }
+  handleDelete(
+    session: PlatformSession,
+    conversation: IMConversation,
+    messageIds: readonly string[],
+    timestamp = Date.now(),
+  ): void {
+    if (
+      session.platformId !== this._config.platformId
+      || session.platformSessionId !== this._session?.platformSessionId
+      || !this._bot
+    ) return
+    const bot = this._bot
+    this._conversations.set(conversation.id, conversation)
+    for (const messageId of messageIds) {
+      bot.dispatch(bot.session({
+        type: 'message-deleted',
+        timestamp,
+        channel: satoriChannel(conversation),
+        ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
+        message: {
+          id: messageId,
+          channel: satoriChannel(conversation),
+          ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
+        },
+      }))
+    }
+  }
+
 
   async getGuild(
     bot: SatoriExportBot,
@@ -225,6 +253,17 @@ export class SatoriExporter {
       user,
     }]
   }
+  async deleteMessage(bot: SatoriExportBot, generation: number, channelId: string, messageId: string): Promise<void> {
+    const platform = this._platform
+    const session = this._session
+    if (!platform || !session || !this.isActive(bot, generation)) throw new Error('Satori exporter bot is no longer active')
+    if (!platform.deleteMessages) throw new Error('Satori exporter platform does not support message deletion')
+    await platform.deleteMessages(session, { id: channelId }, [messageId], { forEveryone: true })
+    if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+      throw new Error('Satori exporter bot is no longer active')
+    }
+  }
+
 
   /** A missing avatar never holds back the message or member it decorates. */
   private async _avatarUrl(
@@ -300,6 +339,11 @@ class SatoriExportBot extends Bot {
     if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
     return this._exporter.sendMessage(this, this.generation, channelId, content)
   }
+  override deleteMessage(channelId: string, messageId: string): Promise<void> {
+    if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
+    return this._exporter.deleteMessage(this, this.generation, channelId, messageId)
+  }
+
 
   override getGuild(guildId: string): Promise<Universal.Guild> {
     if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
