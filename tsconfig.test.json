@@ -1,18 +1,6 @@
 {
   "extends": "./tsconfig",
-  "compilerOptions": {
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "target": "es2024",
-    "lib": ["es2024", "dom", "dom.iterable"],
-    "jsx": "preserve",
-    "noEmit": true,
-    "composite": false,
-    "incremental": false,
-    "types": [
-      "node",
-    ],
-  },
+  "compilerOptions": {},
   "include": [
     "packages/**/*.ts",
     "packages/**/*.tsx",

@@ -1,3 +1,4 @@
+/// <reference path="./cordis.d.ts" />
 export { Config, Mtproto, default } from './service.js'
 export type { MtprotoConfig } from './service.js'
 

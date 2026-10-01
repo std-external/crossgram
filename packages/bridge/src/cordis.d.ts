@@ -1,4 +1,6 @@
 import 'cordis'
+import type {} from '@cordisjs/plugin-server'
+import type {} from 'cordis-webui-solidjs'
 import type {
   ActivePlatformSession,
   CommittedPlatformEvent,
