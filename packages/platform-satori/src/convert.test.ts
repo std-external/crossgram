@@ -102,4 +102,17 @@ describe('Satori conversion', () => {
       sender: { id: 'alice', firstName: 'Alice in Room', username: 'alice' },
     })
   })
+
+  it('stores the Satori isBot flag as the bridge-wide robot metadata', () => {
+    const conversation = { id: 'room', kind: 'group' as const, title: 'Room' }
+    const bot = mapSatoriMessage({ id: 'from-bot', content: 'hi' }, conversation, 'self', {
+      user: { id: 'robot', name: 'robot', isBot: true },
+    })
+    const human = mapSatoriMessage({ id: 'from-human', content: 'hi' }, conversation, 'self', {
+      user: { id: 'alice', name: 'alice', isBot: false },
+    })
+
+    expect(bot.sender?.metadata).toEqual({ bot: true })
+    expect(human.sender?.metadata).toEqual({})
+  })
 })

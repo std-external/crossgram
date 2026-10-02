@@ -223,6 +223,28 @@ describe('SatoriExporter', () => {
     expect(platform.resolveMediaUrl).toHaveBeenCalledWith(session, avatar)
   })
 
+  it('exports the bridge robot flag as the Satori user isBot field', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+
+    exporter.handleMessage(session, group, {
+      ...message('from-bot', group.id),
+      senderId: 'robot',
+      sender: { id: 'robot', firstName: 'Robot', metadata: { bot: true } },
+    }, { created: true })
+    exporter.handleMessage(session, group, {
+      ...message('from-human', group.id),
+      sender: { id: 'alice', firstName: 'Alice', metadata: { bot: false } },
+    }, { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(2))
+    expect(events[0]!.event.user).toEqual({ id: 'robot', name: 'Robot', nick: 'Robot', isBot: true })
+    expect(events[0]!.author).toMatchObject({ id: 'robot', isBot: true })
+    expect(events[1]!.event.user).not.toHaveProperty('isBot')
+  })
+
   it('keeps direct-message authors free of a guild member', async () => {
     const { ctx, exporter } = await createExporter()
     const events: Session[] = []
@@ -438,6 +460,17 @@ describe('SatoriExporter', () => {
       name: 'Alice Member', nick: 'Alice Member', avatar: 'https://media.test/file', joinedAt: 1_700_000_000_000,
     })
     expect(warnings).not.toHaveBeenCalled()
+  })
+
+  it('exports the robot flag on guild member users', async () => {
+    const { ctx, platform } = await createExporter()
+    platform.getConversationMember.mockResolvedValueOnce({
+      ...guildMember, user: { ...guildMember.user, metadata: { bot: true } },
+    })
+
+    await expect(ctx.bots[0]!.getGuildMember('guild:7', 'alice')).resolves.toMatchObject({
+      user: { id: 'alice', isBot: true },
+    })
   })
 
   it('returns a guild member even when its avatar URL fails', async () => {
@@ -1207,6 +1240,27 @@ describe('SatoriExporter', () => {
         message: { id: 'socket', content: 'message socket' },
       },
     })
+    socket.close()
+  })
+
+  it('serializes the robot flag as is_bot on the events socket wire', async () => {
+    const { exporter, events } = await createSatoriServer('test-token')
+    const socket = await openSocket(events)
+    const raw: string[] = []
+    socket.on('message', (data) => raw.push(data.toString()))
+    socket.send(JSON.stringify({ op: Universal.Opcode.IDENTIFY, body: { token: 'test-token' } }))
+    await vi.waitFor(() => expect(raw).toHaveLength(1))
+
+    exporter.handleMessage(session, { id: '42', kind: 'group', title: 'QQ Group' }, {
+      ...message('robot-socket', '42'),
+      senderId: 'robot',
+      sender: { id: 'robot', firstName: 'Robot', metadata: { bot: true } },
+    }, { created: true })
+
+    await vi.waitFor(() => expect(raw).toHaveLength(2))
+    const payload = JSON.parse(raw[1]!) as { body: { user: Record<string, unknown> } }
+    expect(payload.body.user).toMatchObject({ id: 'robot', is_bot: true })
+    expect(payload.body.user).not.toHaveProperty('isBot')
     socket.close()
   })
 

@@ -243,6 +243,8 @@ export interface WireMessage {
     name: string
     alias?: string
     avatar?: WireMedia
+    /** QQ robot account. */
+    bot?: true
   }
   msgSeq?: string
   telegramMessageId?: number
@@ -491,6 +493,7 @@ export interface WireMemberPage {
       alias?: string
       avatarUrl?: string
       avatar?: WireMedia
+      bot?: true
     }
     role: 'owner' | 'administrator' | 'member'
   }>

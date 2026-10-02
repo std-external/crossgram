@@ -11,7 +11,7 @@ import {
   type IMConversation, type IMConversationMember, type IMConversationMemberPage, type IMConversationRef, type IMDialogPage, type IMGroupFilePage,
   type IMDirectDownload, type IMDownloadOptions, type IMEvent, type IMHistoryPage, type IMHistoryQuery, type IMMedia, type IMMessage, type IMMessageInput, type IMMessageTarget,
   type IMMediaInput, type IMMediaUploadPreparation, type IMMediaUploadProbe,
-  type IMMessageBundle, type IMMessageSnapshot, type JsonValue,
+  type IMMessageBundle, type IMMessageSnapshot, type JsonObject, type JsonValue,
   type IMMessageSearchPage, type IMMessageSearchQuery, type IMPageQuery, type IMPlatform, type IMReactionActorPage, type IMReactionActorPageRequest, type IMReactionContext, type IMReactionResource, type IMReactionTarget, type IMReadTarget, type IMRequest, type IMRequestAction, type IMRequestPage, type IMRequestQuery, type IMSticker, type IMTransferOptions,
   type IMUser, type IMUserPage, type PlatformCapabilities, type PlatformSession, type Unsubscribe,
   type VoiceCallMediaProvider, type VoiceWorkerCall, type VoiceWorkerMediaEndpoint,
@@ -787,7 +787,7 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
         username: user.numericId,
         about: typeof user.signature === 'string' ? user.signature : undefined,
         avatar: user.avatar ? mapMedia(user.avatar) : undefined,
-        metadata: user.numericId ? { qq: user.numericId } : undefined,
+        metadata: qqUserMetadata(user),
       })),
       nextCursor: page.nextCursor,
     }
@@ -948,7 +948,7 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
       username: user.numericId,
       about: typeof user.signature === 'string' ? user.signature : undefined,
       avatar: user.avatar ? mapMedia(user.avatar) : undefined,
-      metadata: user.numericId ? { qq: user.numericId } : undefined,
+      metadata: qqUserMetadata(user),
     }
   }
 
@@ -1032,10 +1032,7 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
           firstName: member.user.name,
           username: member.user.numericId,
           avatar: member.user.avatar ? mapMedia(member.user.avatar) : undefined,
-          metadata: {
-            ...(member.user.numericId ? { qq: member.user.numericId } : {}),
-            qqName: member.user.name,
-          },
+          metadata: { ...qqUserMetadata(member.user), qqName: member.user.name },
         },
         role: member.role,
         permissions: permissions(member.role),
@@ -2635,6 +2632,14 @@ function mapRequest(input: WireRequest): IMRequest<QQMediaLocator> {
   }
 }
 
+/** Shared user metadata; `bot` is the bridge-wide robot flag read by MTProto and Satori. */
+function qqUserMetadata(user: { numericId?: string, bot?: true }): JsonObject {
+  return {
+    ...(user.numericId ? { qq: user.numericId } : {}),
+    ...(user.bot ? { bot: true } : {}),
+  }
+}
+
 function mapMedia(input: WireMedia): IMMedia<QQMediaLocator> {
   return {
     id: `${input.id}:original-v1`,
@@ -2702,10 +2707,7 @@ function mapMessage(
       firstName: input.sender.name,
       username: input.sender.numericId,
       avatar: input.sender.avatar ? mapMedia(input.sender.avatar) : undefined,
-      metadata: {
-        ...(input.sender.numericId ? { qq: input.sender.numericId } : {}),
-        qqName: input.sender.name,
-      },
+      metadata: { ...qqUserMetadata(input.sender), qqName: input.sender.name },
     } : undefined,
     senderTitle: input.sender?.alias?.trim() || undefined,
     timestamp: input.timestamp,

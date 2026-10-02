@@ -2645,6 +2645,31 @@ describe('QQNTPlatform mapping', () => {
     expect(page.members[0].title).toBeUndefined()
   })
 
+  it('maps the QQ robot flag into bridge user metadata for members, contacts, and profiles', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getMembers = vi.fn(async () => ({
+      members: [
+        { user: { id: 'robot', numericId: '3889000001', name: 'Robot', bot: true as const }, role: 'member' as const },
+        { user: { id: 'human', numericId: '42', name: 'Human' }, role: 'member' as const },
+      ],
+      total: 2,
+    }))
+    const page = await platform.getConversationMembers(session, { id: 'group' })
+    expect(page.members[0]!.user.metadata).toEqual({ qq: '3889000001', bot: true, qqName: 'Robot' })
+    expect(page.members[1]!.user.metadata).toEqual({ qq: '42', qqName: 'Human' })
+
+    platform.client.getContacts = vi.fn(async () => ({
+      users: [{ id: 'robot', numericId: '3889000001', name: 'Robot', bot: true as const }],
+    }))
+    await expect(platform.getContacts(session)).resolves.toMatchObject({
+      users: [{ id: 'robot', metadata: { qq: '3889000001', bot: true } }],
+    })
+    platform.client.getUser = vi.fn(async () => ({ id: 'robot', numericId: '3889000001', name: 'Robot', bot: true as const }))
+    await expect(platform.getUser(session, 'robot')).resolves.toMatchObject({
+      metadata: { qq: '3889000001', bot: true },
+    })
+  })
+
   it('does not scan the full member list when a self-role probe arrives before group metadata', async () => {
     const platform = new QQNTPlatform()
     platform.client.getMembers = vi.fn(async () => ({ members: [], total: 0 }))

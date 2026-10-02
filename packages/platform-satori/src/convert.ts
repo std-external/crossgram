@@ -24,7 +24,7 @@ export function mapSatoriUser(
     avatar: avatar ? mediaFromUrl(avatar, 'image', `avatar:${id}`) : undefined,
     metadata: {
       ...(user?.discriminator ? { satoriDiscriminator: user.discriminator } : {}),
-      ...(user?.isBot === undefined ? {} : { satoriIsBot: user.isBot }),
+      ...(user?.isBot ? { bot: true } : {}),
     },
   }
 }

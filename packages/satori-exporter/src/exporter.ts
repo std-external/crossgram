@@ -677,7 +677,7 @@ function satoriGuild(conversation: IMConversation): Universal.Guild {
 
 function satoriUser(id: string, user: IMMessage['sender'], avatar?: string): Universal.User {
   const name = user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || id : id
-  return { id, name, nick: name, ...(avatar ? { avatar } : {}) }
+  return { id, name, nick: name, ...(avatar ? { avatar } : {}), ...(user?.metadata?.bot === true ? { isBot: true } : {}) }
 }
 
 /** System messages whose only sender is the platform placeholder get an explicit label. */

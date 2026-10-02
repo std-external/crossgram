@@ -27,7 +27,7 @@ afterEach(async () => {
 const menuMessage = {
   id: 'qq-bot-menu', conversationId: 'menu-group', senderId: 'bot', timestamp: 1_800_000_000, outgoing: false,
   msgSeq: '1884646', telegramMessageId: 1884646,
-  sender: { id: 'bot', name: '橘波特', numericId: '3889020080' },
+  sender: { id: 'bot', name: '橘波特', numericId: '3889020080', bot: true },
   parts: [
     { type: 'inline-keyboard', keyboard: {
       botAppid: '102106848',
@@ -135,14 +135,20 @@ describe('QQNT bot markdown E2E', () => {
     const rpc = new DialogRpc(platform, session, store)
     const menuPeer = { _: 'inputPeerChannel' as const, channelId: rpc.peerTlId('menu-group'), accessHash: Long.ZERO }
     const otherPeer = { _: 'inputPeerChannel' as const, channelId: rpc.peerTlId('other-group'), accessHash: Long.ZERO }
+    let users: tl.TypeUser[] = []
     const read = async (peer: tl.TypeInputChannel | typeof menuPeer) => {
       const result = await rpc.getHistory({
         _: 'messages.getHistory', peer: peer as tl.TypeInputPeer, offsetId: 0, offsetDate: 0, addOffset: 0,
         limit: 20, maxId: 0, minId: 0, hash: Long.ZERO,
       }) as tl.messages.RawChannelMessages
+      users = result.users
       return result.messages.find((message): message is tl.RawMessage => message._ === 'message' && message.id === msgId)!
     }
     const projected = await read(menuPeer)
+    // The QQ robot flag reaches Telegram clients as a real bot user.
+    const sender = users.find((user): user is tl.RawUser =>
+      user._ === 'user' && projected.fromId?._ === 'peerUser' && user.id === projected.fromId.userId)
+    expect(sender).toMatchObject({ bot: true, firstName: '橘波特' })
     expect(projected.message).toBe('卫戍协议控制台\n私聊 /token 可获取设置页 JWT。')
     expect(projected.replyMarkup).toMatchObject({
       _: 'replyInlineMarkup',
