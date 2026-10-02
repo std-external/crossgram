@@ -1314,7 +1314,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
   })
 
   for (const [method, handler] of Object.entries(startupRpcHandlers)) {
-    rpc.register(method, async () => handler())
+    rpc.register(method, async (_rpc, request) => handler(request))
   }
   for (const [method, handler] of Object.entries(androidRpcHandlers)) {
     rpc.register(method, async (rpc, request) => {

@@ -1,7 +1,8 @@
 import type { tl } from '@mtcute/core'
 import Long from 'long'
+import { bareVector } from '@mtproto-relay/mtproto'
 
-type StartupHandler = () => tl.TlObject
+type StartupHandler = (request?: unknown) => tl.TlObject
 
 /**
  * Telegram Desktop loads these optional resources as one post-login batch and
@@ -60,6 +61,45 @@ export const startupRpcHandlers: Readonly<Record<string, StartupHandler>> = {
   'stories.getStoriesArchive': () => ({
     _: 'stories.stories', count: 0, stories: [], chats: [], users: [],
   } as unknown as tl.TlObject),
+  // Telegram Web loads its language pack and optional monetization /
+  // community resources at startup; empty answers keep it from retrying
+  // METHOD_NOT_IMPLEMENTED forever. `auth.initPasskeyLogin` stays unregistered:
+  // the error makes Web clients fall back to QR login.
+  'langpack.getLangPack': (request) => ({
+    _: 'langPackDifference',
+    langCode: (request as { langCode?: string } | undefined)?.langCode ?? '',
+    fromVersion: 0, version: 0, strings: [],
+  } as unknown as tl.TlObject),
+  'langpack.getLanguage': (request) => ({
+    _: 'langPackLanguage',
+    langCode: (request as { langCode?: string } | undefined)?.langCode ?? '',
+    name: 'English', nativeName: 'English', pluralCode: 'en',
+    stringsCount: 0, translatedCount: 0, translationsUrl: '',
+  } as unknown as tl.TlObject),
+  'langpack.getStrings': () => bareVector([]) as unknown as tl.TlObject,
+  'account.getCollectibleEmojiStatuses': () => ({
+    _: 'account.emojiStatuses', hash: Long.ZERO, statuses: [],
+  } as unknown as tl.TlObject),
+  'account.getContentSettings': () => ({
+    _: 'account.contentSettings', flags: 0,
+  } as unknown as tl.TlObject),
+  'aicompose.getTones': () => ({
+    _: 'aicompose.tones', hash: Long.ZERO, tones: [], users: [],
+  } as unknown as tl.TlObject),
+  'communities.getJoinedCommunities': () => ({
+    _: 'messages.chats', chats: [],
+  } as unknown as tl.TlObject),
+  'messages.getPaidReactionPrivacy': () => ({
+    _: 'updatesTooLong',
+  } as unknown as tl.TlObject),
+  'messages.getPinnedSavedDialogs': () => ({
+    _: 'messages.savedDialogsNotModified', count: 0,
+  } as unknown as tl.TlObject),
+  'payments.getStarsStatus': () => ({
+    _: 'payments.starsStatus', flags: 0, balance: { _: 'starsAmount', amount: Long.ZERO, nanos: 0 },
+    chats: [], users: [],
+  } as unknown as tl.TlObject),
+  'payments.getStarsTopupOptions': () => bareVector([]) as unknown as tl.TlObject,
 }
 
 function futureDate(): number {
