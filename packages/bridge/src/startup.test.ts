@@ -19,6 +19,7 @@ describe('post-login startup responses', () => {
       'account.getReactionsNotifySettings',
       'aicompose.getTones',
       'communities.getJoinedCommunities',
+      'help.getCountriesList',
       'help.getPeerColors',
       'help.getPeerProfileColors',
       'help.getPremiumPromo',

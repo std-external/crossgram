@@ -77,6 +77,9 @@ export const startupRpcHandlers: Readonly<Record<string, StartupHandler>> = {
     stringsCount: 0, translatedCount: 0, translationsUrl: '',
   } as unknown as tl.TlObject),
   'langpack.getStrings': () => bareVector([]) as unknown as tl.TlObject,
+  'help.getCountriesList': () => ({
+    _: 'help.countriesList', hash: 0, countries: COUNTRIES,
+  } as unknown as tl.TlObject),
   'account.getCollectibleEmojiStatuses': () => ({
     _: 'account.emojiStatuses', hash: Long.ZERO, statuses: [],
   } as unknown as tl.TlObject),
@@ -105,3 +108,52 @@ export const startupRpcHandlers: Readonly<Record<string, StartupHandler>> = {
 function futureDate(): number {
   return Math.floor(Date.now() / 1000) + 86400
 }
+
+/** Common calling codes for the phone-number login country picker. */
+const COUNTRIES: readonly tl.TlObject[] = ([
+  ['CN', 'China', '86'],
+  ['HK', 'Hong Kong', '852'],
+  ['MO', 'Macao', '853'],
+  ['TW', 'Taiwan', '886'],
+  ['JP', 'Japan', '81'],
+  ['KR', 'South Korea', '82'],
+  ['SG', 'Singapore', '65'],
+  ['MY', 'Malaysia', '60'],
+  ['TH', 'Thailand', '66'],
+  ['VN', 'Vietnam', '84'],
+  ['PH', 'Philippines', '63'],
+  ['ID', 'Indonesia', '62'],
+  ['IN', 'India', '91'],
+  ['PK', 'Pakistan', '92'],
+  ['US', 'United States', '1'],
+  ['CA', 'Canada', '1'],
+  ['GB', 'United Kingdom', '44'],
+  ['IE', 'Ireland', '353'],
+  ['DE', 'Germany', '49'],
+  ['FR', 'France', '33'],
+  ['IT', 'Italy', '39'],
+  ['ES', 'Spain', '34'],
+  ['PT', 'Portugal', '351'],
+  ['NL', 'Netherlands', '31'],
+  ['BE', 'Belgium', '32'],
+  ['CH', 'Switzerland', '41'],
+  ['AT', 'Austria', '43'],
+  ['SE', 'Sweden', '46'],
+  ['NO', 'Norway', '47'],
+  ['DK', 'Denmark', '45'],
+  ['FI', 'Finland', '358'],
+  ['PL', 'Poland', '48'],
+  ['RU', 'Russia', '7'],
+  ['UA', 'Ukraine', '380'],
+  ['AU', 'Australia', '61'],
+  ['NZ', 'New Zealand', '64'],
+  ['BR', 'Brazil', '55'],
+  ['MX', 'Mexico', '52'],
+  ['AE', 'United Arab Emirates', '971'],
+  ['SA', 'Saudi Arabia', '966'],
+] as const).map(([iso2, defaultName, code]) => ({
+  _: 'help.country',
+  iso2,
+  defaultName,
+  countryCodes: [{ _: 'help.countryCode', countryCode: code }],
+}) as unknown as tl.TlObject)
