@@ -23,8 +23,8 @@ export function telegramChannelId(value: string | number): number | undefined {
 }
 
 /** The channel id the bridge exposes for one platform conversation id. */
-export function telegramChannelIdFor(platformConversationId: string): number {
-  return stableId(`peer:${platformConversationId}`)
+export function telegramChannelIdFor(platformSessionId: string, platformConversationId: string): number {
+  return stableId(`peer:${platformSessionId}:${platformConversationId}`)
 }
 
 /**
@@ -36,13 +36,14 @@ export function telegramChannelIdFor(platformConversationId: string): number {
  */
 export function conversationIdMatches(
   configured: string | number,
+  platformSessionId: string,
   platformConversationId: string,
 ): boolean {
   const raw = String(configured).trim()
   if (!raw || !platformConversationId) return false
   if (raw === platformConversationId) return true
   const channelId = telegramChannelId(raw)
-  return channelId !== undefined && telegramChannelIdFor(platformConversationId) === channelId
+  return channelId !== undefined && telegramChannelIdFor(platformSessionId, platformConversationId) === channelId
 }
 
 export interface KickCandidate {

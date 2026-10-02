@@ -956,7 +956,7 @@ describe('QQNTPlatform mapping', () => {
     expect(remove).toHaveBeenCalledWith('mtproto_im_conversation', { id: { $in: [42] } })
     expect(remove).toHaveBeenCalledWith('mtproto_channel_update_state', {
       platformSessionId: session.platformSessionId,
-      channelId: { $in: [stableId('peer:0')].map(String) },
+      channelId: { $in: [stableId(`peer:${session.platformSessionId}:0`)].map(String) },
     })
     expect(remove).toHaveBeenCalledWith('mtproto_notification_settings', {
       id: { $in: ['peer-zero'] },

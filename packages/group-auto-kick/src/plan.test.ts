@@ -28,8 +28,8 @@ describe('telegramChannelId', () => {
   it('decodes the -100 channel prefix', () => {
     expect(telegramChannelId('-1000371852035')).toBe(371852035)
     expect(telegramChannelId('-1000000000001')).toBe(1)
-    expect(telegramChannelId(String(-1_000_000_000_000 - telegramChannelIdFor(GROUP_CODE))))
-      .toBe(telegramChannelIdFor(GROUP_CODE))
+    expect(telegramChannelId(String(-1_000_000_000_000 - telegramChannelIdFor('session', GROUP_CODE))))
+      .toBe(telegramChannelIdFor('session', GROUP_CODE))
   })
 
   it('rejects ids that are not channel chat ids', () => {
@@ -43,23 +43,23 @@ describe('telegramChannelId', () => {
 
 describe('conversationIdMatches', () => {
   it('accepts the platform conversation id', () => {
-    expect(conversationIdMatches(GROUP_CODE, GROUP_CODE)).toBe(true)
-    expect(conversationIdMatches(Number(GROUP_CODE), GROUP_CODE)).toBe(true)
-    expect(conversationIdMatches(' 1002974327 ', GROUP_CODE)).toBe(true)
+    expect(conversationIdMatches(GROUP_CODE, 'session', GROUP_CODE)).toBe(true)
+    expect(conversationIdMatches(Number(GROUP_CODE), 'session', GROUP_CODE)).toBe(true)
+    expect(conversationIdMatches(' 1002974327 ', 'session', GROUP_CODE)).toBe(true)
   })
 
   it('accepts the projected Telegram chat id', () => {
-    const chatId = String(-1_000_000_000_000 - telegramChannelIdFor(GROUP_CODE))
-    expect(chatId).toBe('-1000371852035')
-    expect(conversationIdMatches(chatId, GROUP_CODE)).toBe(true)
-    expect(conversationIdMatches(Number(chatId), GROUP_CODE)).toBe(true)
+    const chatId = String(-1_000_000_000_000 - telegramChannelIdFor('session', GROUP_CODE))
+    expect(chatId).toBe('-1001533512023')
+    expect(conversationIdMatches(chatId, 'session', GROUP_CODE)).toBe(true)
+    expect(conversationIdMatches(Number(chatId), 'session', GROUP_CODE)).toBe(true)
   })
 
   it('rejects other groups', () => {
-    expect(conversationIdMatches('1053846443', GROUP_CODE)).toBe(false)
-    expect(conversationIdMatches('-1001111111111', GROUP_CODE)).toBe(false)
-    expect(conversationIdMatches('', GROUP_CODE)).toBe(false)
-    expect(conversationIdMatches(GROUP_CODE, '')).toBe(false)
+    expect(conversationIdMatches('1053846443', 'session', GROUP_CODE)).toBe(false)
+    expect(conversationIdMatches('-1001111111111', 'session', GROUP_CODE)).toBe(false)
+    expect(conversationIdMatches('', 'session', GROUP_CODE)).toBe(false)
+    expect(conversationIdMatches(GROUP_CODE, 'session', '')).toBe(false)
   })
 })
 

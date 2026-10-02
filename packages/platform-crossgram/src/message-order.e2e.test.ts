@@ -403,7 +403,7 @@ describe('QQNT same-second message ordering E2E', () => {
       })
 
       // The same reply header comes back from the history read the clients use.
-      const channelId = stableId(`peer:${conversation.id}`)
+      const channelId = stableId(`peer:${replySession.platformSessionId}:${conversation.id}`)
       const history = await rpc.getHistory({
         _: 'messages.getHistory', peer: { _: 'inputPeerChannel', channelId, accessHash: Long.ZERO },
         offsetId: 0, offsetDate: 0, addOffset: 0, limit: 100, maxId: 0, minId: 0, hash: Long.ZERO,
@@ -2586,7 +2586,7 @@ describe('QQNT join notice E2E', () => {
     const history = await rpc.getHistory({
       _: 'messages.getHistory',
       peer: {
-        _: 'inputPeerChannel', channelId: stableId(`peer:${conversation.id}`), accessHash: Long.ZERO,
+        _: 'inputPeerChannel', channelId: stableId(`peer:${joinSession.platformSessionId}:${conversation.id}`), accessHash: Long.ZERO,
       },
       offsetId: 0, offsetDate: 0, addOffset: 0, limit: 100, maxId: 0, minId: 0, hash: Long.ZERO,
     }) as tl.messages.RawMessages

@@ -7,7 +7,7 @@ import enUS from './locales/en-US.yml'
 import zhCN from './locales/zh-CN.yml'
 import {
   IMMediaUnavailableError, IMMessageSendRejectedError, IMMessageTargetUnavailableError,
-  messagePartText, resolvePlatformPluginId, serviceActionText, stableId,
+  messagePartText, peerTlSeed, resolvePlatformPluginId, serviceActionText, stableId,
   type IMConversation, type IMConversationMember, type IMConversationMemberPage, type IMConversationRef, type IMDialogPage, type IMGroupFilePage,
   type IMDirectDownload, type IMDownloadOptions, type IMEvent, type IMHistoryPage, type IMHistoryQuery, type IMMedia, type IMMessage, type IMMessageInput, type IMMessageTarget,
   type IMMediaInput, type IMMediaUploadPreparation, type IMMediaUploadProbe,
@@ -2145,7 +2145,7 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
         platformUserId: { $in: platformConversationIds },
       })
 
-      const channelIds = platformConversationIds.map((id) => String(stableId(`peer:${id}`)))
+      const channelIds = platformConversationIds.map((id) => String(stableId(peerTlSeed(session.platformSessionId, id))))
       await database.remove('mtproto_channel_update_state', {
         platformSessionId: session.platformSessionId,
         channelId: { $in: channelIds },

@@ -135,7 +135,7 @@ describe('QQ administrator management E2E', () => {
       _: 'channel', title: 'QQ Group', creator: true, adminRights: { addAdmins: true },
     }])
     const channel = {
-      _: 'inputChannel' as const, channelId: stableId('peer:2:group'), accessHash: Long.ZERO,
+      _: 'inputChannel' as const, channelId: stableId(`peer:${session.platformSessionId}:2:group`), accessHash: Long.ZERO,
     }
     const members = await roundTrip(harness, {
       _: 'channels.getParticipants', channel, filter: { _: 'channelParticipantsRecent' },

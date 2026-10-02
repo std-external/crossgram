@@ -67,7 +67,7 @@ export * from './platform.js'
 export { defineModels } from './models.js'
 export {
   DialogRpc, makeTlCardPreview, makeTlMessageMedia, makeTlTransientMessageMedia,
-  projectTlMessage, stableId,
+  projectTlMessage, peerTlSeed, stableId,
 } from './dialogs.js'
 export * from './message-projection.js'
 export * from './detached-message-projection.js'

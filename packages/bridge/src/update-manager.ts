@@ -6,7 +6,7 @@ import Long from 'long'
 import { RpcError } from '@mtproto-relay/mtproto'
 import {
   makeAdminRights, makeDefaultBannedRights, makeTlArticleMedia, makeTlCardPreview,
-  makeTlMessageMedia, projectTlMessage, stableId,
+  makeTlMessageMedia, peerTlSeed, projectTlMessage, stableId,
 } from './dialogs.js'
 import { toUser, type MessageStore } from './message-store.js'
 import {
@@ -222,7 +222,7 @@ export class UpdateManager {
       const messageIds = [...new Set(group.deletedMessageIds)].sort((left, right) => left - right)
       const channelId = group.conversation.kind === 'direct'
         ? undefined
-        : stableId(`peer:${group.conversation.id}`)
+        : stableId(peerTlSeed(session.platformSessionId, group.conversation.id))
       const eventKey = [
         session.platformSessionId, 'block-delete', userId, changedAt.getTime(), scope,
       ].join(':')
@@ -238,7 +238,7 @@ export class UpdateManager {
               ?? { id: group.conversation.id, firstName: group.conversation.title },
           )).id
         : undefined
-      const peer = conversationPeer(group.conversation, directPeerId)
+      const peer = conversationPeer(session.platformSessionId, group.conversation, directPeerId)
       const updates: tl.TypeUpdate[] = []
       if (messageIds.length) {
         updates.push(channelId === undefined
@@ -260,7 +260,7 @@ export class UpdateManager {
       }
       const payload: tl.RawUpdates = {
         _: 'updates', updates, users: [],
-        chats: channelId === undefined ? [] : [this._makeChat(group.conversation)],
+        chats: channelId === undefined ? [] : [this._makeChat(session.platformSessionId, group.conversation)],
         date: delivery.date, seq: delivery.seq,
       }
       await this._store.setUpdatePayload(eventKey, updateToJson(payload))
@@ -325,7 +325,7 @@ export class UpdateManager {
     const date = Math.floor(Date.now() / 1000)
     const channelId = conversation.kind === 'direct'
       ? undefined
-      : stableId(`peer:${conversation.id}`)
+      : stableId(peerTlSeed(session.platformSessionId, conversation.id))
     const eventKey = [
       session.platformSessionId,
       'mention-read',
@@ -360,7 +360,7 @@ export class UpdateManager {
       _: 'updates',
       updates: [update],
       users: [],
-      chats: channelId === undefined ? [] : [makeUpdateChat(conversation, Boolean(topMsgId), this._dcId)],
+      chats: channelId === undefined ? [] : [makeUpdateChat(session.platformSessionId, conversation, Boolean(topMsgId), this._dcId)],
       date: delivery.date,
       seq: delivery.seq,
     }
@@ -508,7 +508,7 @@ export class UpdateManager {
       : event.conversation
     const channelId = displayConversation.kind === 'direct'
       ? undefined
-      : stableId(`peer:${displayConversation.id}`)
+      : stableId(peerTlSeed(session.platformSessionId, displayConversation.id))
     delivery ??= await this._store.prepareUpdateDelivery(
       eventKey, session.platformSessionId, 0, event.timestamp, channelId,
     )
@@ -534,7 +534,7 @@ export class UpdateManager {
     let pts = delivery.pts - delivery.ptsCount
     const updates = result.tlMessageIds.map((msgId): tl.RawUpdateMessageReactions => ({
       _: 'updateMessageReactions',
-      peer: conversationPeer(displayConversation, directPeerId),
+      peer: conversationPeer(session.platformSessionId, displayConversation, directPeerId),
       msgId,
       reactions,
     }))
@@ -544,7 +544,7 @@ export class UpdateManager {
     void pts
     const payload: tl.RawUpdates = {
       _: 'updates', updates, users: reactionUsers.users,
-      chats: displayConversation.kind === 'direct' ? [] : [this._makeChat(displayConversation)],
+      chats: displayConversation.kind === 'direct' ? [] : [this._makeChat(session.platformSessionId, displayConversation)],
       date: delivery.date, seq: delivery.seq,
     }
     await this._store.setUpdatePayload(eventKey, updateToJson(payload))
@@ -563,7 +563,7 @@ export class UpdateManager {
       : result.conversation
     const channelId = displayConversation.kind === 'direct'
       ? undefined
-      : stableId(`peer:${displayConversation.id}`)
+      : stableId(peerTlSeed(session.platformSessionId, displayConversation.id))
     const eventKey = platformEventUpdateKey(session, committed)!
     let delivery = await this._store.getUpdateDelivery(eventKey)
     delivery ??= await this._store.prepareUpdateDelivery(
@@ -597,7 +597,7 @@ export class UpdateManager {
     }
     const payload: tl.RawUpdates = {
       _: 'updates', updates: [update], users: [],
-      chats: channelId === undefined ? [] : [this._makeChat(displayConversation)],
+      chats: channelId === undefined ? [] : [this._makeChat(session.platformSessionId, displayConversation)],
       date: delivery.date, seq: delivery.seq,
     }
     await this._store.setUpdatePayload(eventKey, updateToJson(payload))
@@ -645,7 +645,7 @@ export class UpdateManager {
       : event.conversation
     const channelId = displayConversation.kind === 'direct'
       ? undefined
-      : stableId(`peer:${displayConversation.id}`)
+      : stableId(peerTlSeed(session.platformSessionId, displayConversation.id))
     delivery ??= await this._store.prepareUpdateDelivery(
       eventKey, session.platformSessionId,
       result.projection.length + result.removedTlMessageIds.length,
@@ -803,6 +803,7 @@ export class UpdateManager {
         )
         return {
           message: projectTlMessage({
+            platformSessionId: session.platformSessionId,
             conversation: displayConversation,
             source: projectedSource,
             tlId: part.tlMessageId,
@@ -913,7 +914,7 @@ export class UpdateManager {
     const chats = [
       ...(displayConversation.kind === 'direct'
         ? []
-        : [this._makeChat(displayConversation, topicId !== undefined)]),
+        : [this._makeChat(session.platformSessionId, displayConversation, topicId !== undefined)]),
       ...projectionChats,
     ]
     const payload: tl.RawUpdates = {
@@ -957,7 +958,7 @@ export class UpdateManager {
       : event.conversation
     const channelId = displayConversation.kind === 'direct'
       ? undefined
-      : stableId(`peer:${displayConversation.id}`)
+      : stableId(peerTlSeed(session.platformSessionId, displayConversation.id))
     delivery ??= await this._store.prepareUpdateDelivery(
       eventKey, session.platformSessionId, result.tlMessageIds.length, event.timestamp, channelId,
     )
@@ -965,7 +966,7 @@ export class UpdateManager {
     const update = event.conversation.kind !== 'direct'
       ? {
           _: 'updateDeleteChannelMessages',
-          channelId: stableId(`peer:${displayConversation.id}`),
+          channelId: stableId(peerTlSeed(session.platformSessionId, displayConversation.id)),
           messages: result.tlMessageIds,
           pts: delivery.pts,
           ptsCount: delivery.ptsCount,
@@ -981,7 +982,7 @@ export class UpdateManager {
       users: [],
       chats: displayConversation.kind === 'direct'
         ? []
-        : [this._makeChat(displayConversation, !!event.conversation.parentId)],
+        : [this._makeChat(session.platformSessionId, displayConversation, !!event.conversation.parentId)],
       date: delivery.date,
       seq: delivery.seq,
     }
@@ -994,8 +995,8 @@ export class UpdateManager {
     return payload
   }
 
-  private _makeChat(conversation: IMConversation, forum = false): tl.TypeChat {
-    return makeUpdateChat(conversation, forum, this._dcId)
+  private _makeChat(platformSessionId: string, conversation: IMConversation, forum = false): tl.TypeChat {
+    return makeUpdateChat(platformSessionId, conversation, forum, this._dcId)
   }
 
   /**
@@ -1378,8 +1379,8 @@ function requiredUserId(userIds: ReadonlyMap<string, number>, platformUserId: st
   return id
 }
 
-function makeUpdateChat(conversation: IMConversation, forum = false, dcId = 1): tl.TypeChat {
-  const id = stableId(`peer:${conversation.id}`)
+function makeUpdateChat(platformSessionId: string, conversation: IMConversation, forum = false, dcId = 1): tl.TypeChat {
+  const id = stableId(peerTlSeed(platformSessionId, conversation.id))
   const broadcast = conversation.metadata?.broadcast === true
   const creator = conversation.selfRole === 'owner'
   const administrator = conversation.selfRole === 'administrator'
@@ -1452,10 +1453,10 @@ function withReplyToTopId(update: tl.TypeUpdate, replyToTopId: number | undefine
   }
 }
 
-function conversationPeer(conversation: IMConversation, directUserId?: number): tl.TypePeer {
+function conversationPeer(platformSessionId: string, conversation: IMConversation, directUserId?: number): tl.TypePeer {
   const id = conversation.kind === 'direct'
     ? directUserId ?? (() => { throw new Error(`missing direct user ID for ${conversation.id}`) })()
-    : stableId(`peer:${conversation.id}`)
+    : stableId(peerTlSeed(platformSessionId, conversation.id))
   return conversation.kind === 'direct'
     ? { _: 'peerUser', userId: id }
     : { _: 'peerChannel', channelId: id }

@@ -23,6 +23,9 @@ const session: PlatformSession = {
   virtualPhone: '888123456789012',
 }
 
+/** Peer/user TL ID for this test session, matching DialogRpc's session-scoped allocation. */
+const peerStableId = (name: string) => stableId(`peer:${session.platformSessionId}:${name}`)
+
 function makeProjectionRpc(
   platform: IMPlatform,
   systemPeers?: SystemPeerService,
@@ -216,7 +219,7 @@ describe('DialogRpc', () => {
     ctx.on('bridge/message/project', middleware)
     const rpc = makeProjectionRpc(new DialogTestPlatform(), undefined, pipeline)
 
-    const history = await rpc.getHistory(getHistoryRequest(stableId('peer:alice'))) as tl.messages.RawMessages
+    const history = await rpc.getHistory(getHistoryRequest(peerStableId('alice'))) as tl.messages.RawMessages
 
     expect(middleware).toHaveBeenCalled()
     expect(history.messages[0]).toMatchObject({ _: 'message', message: 'projected history message' })
@@ -729,9 +732,7 @@ describe('DialogRpc', () => {
     const first = await rpc.getDialogs(getDialogsRequest({ limit: 100 })) as tl.messages.RawDialogsSlice
     expect(first._).toBe('messages.dialogsSlice')
     expect(first.count).toBe(103)
-    expect(peerIds(first)).toEqual(Array.from({ length: 100 }, (_, index) => stableId(
-      `peer:group-${String(index).padStart(3, '0')}`,
-    )))
+    expect(peerIds(first)).toEqual(Array.from({ length: 100 }, (_, index) => peerStableId(`group-${String(index).padStart(3, '0')}`)))
     expect(first.dialogs.slice(0, 30).every((dialog) =>
       dialog._ === 'dialog' && dialog.folderId === 1)).toBe(true)
     expect(first.dialogs.slice(30).every((dialog) =>
@@ -740,28 +741,22 @@ describe('DialogRpc', () => {
     const second = await rpc.getDialogs(getDialogsRequest({
       limit: 100,
       offsetPeer: {
-        _: 'inputPeerChannel', channelId: stableId('peer:group-099'), accessHash: Long.ONE,
+        _: 'inputPeerChannel', channelId: peerStableId('group-099'), accessHash: Long.ONE,
       },
     })) as tl.messages.RawDialogs
     const visible = [...peerIds(first), ...peerIds(second)]
-    expect(visible).toEqual(Array.from({ length: 103 }, (_, index) => stableId(
-      `peer:group-${String(index).padStart(3, '0')}`,
-    )))
+    expect(visible).toEqual(Array.from({ length: 103 }, (_, index) => peerStableId(`group-${String(index).padStart(3, '0')}`)))
     expect(new Set(visible)).toHaveLength(103)
 
     const main = await rpc.getDialogs(
       getDialogsRequest({ folderId: 0, limit: 100 }),
     ) as tl.messages.RawDialogs
-    expect(peerIds(main)).toEqual(Array.from({ length: 73 }, (_, index) => stableId(
-      `peer:group-${String(index + 30).padStart(3, '0')}`,
-    )))
+    expect(peerIds(main)).toEqual(Array.from({ length: 73 }, (_, index) => peerStableId(`group-${String(index + 30).padStart(3, '0')}`)))
 
     const archive = await rpc.getDialogs(
       getDialogsRequest({ folderId: 1, limit: 100 }),
     ) as tl.messages.RawDialogs
-    expect(peerIds(archive)).toEqual(Array.from({ length: 30 }, (_, index) => stableId(
-      `peer:group-${String(index).padStart(3, '0')}`,
-    )))
+    expect(peerIds(archive)).toEqual(Array.from({ length: 30 }, (_, index) => peerStableId(`group-${String(index).padStart(3, '0')}`)))
   })
 
   it('reports the upstream total instead of the limit-plus-one probe size', async () => {
@@ -899,8 +894,8 @@ describe('DialogRpc', () => {
 
   it('returns only requested peer dialogs in request order and deduplicates peers', async () => {
     const rpc = new DialogRpc(new DialogTestPlatform(), session)
-    const aliceId = stableId('peer:alice')
-    const bobId = stableId('peer:bob')
+    const aliceId = peerStableId('alice')
+    const bobId = peerStableId('bob')
     const result = await rpc.getPeerDialogs({
       _: 'messages.getPeerDialogs',
       peers: [
@@ -926,7 +921,7 @@ describe('DialogRpc', () => {
     const platform = new DialogTestPlatform()
     const getDialogs = vi.spyOn(platform, 'getDialogs')
     const rpc = new DialogRpc(platform, session)
-    const alice = { _: 'inputPeerUser' as const, userId: stableId('peer:alice'), accessHash: Long.ZERO }
+    const alice = { _: 'inputPeerUser' as const, userId: peerStableId('alice'), accessHash: Long.ZERO }
 
     await rpc.getPeerSettings({ _: 'messages.getPeerSettings', peer: alice })
     await rpc.getPeerDialogs({
@@ -962,7 +957,7 @@ describe('DialogRpc', () => {
     const rpc = new DialogRpc(new DialogTestPlatform(), session)
     // A resumed client can use its cached stable user ID before getDialogs has
     // hydrated this DialogRpc instance.
-    const aliceId = stableId('peer:alice')
+    const aliceId = peerStableId('alice')
     const full = await rpc.getHistory(getHistoryRequest(aliceId)) as tl.messages.RawMessages
 
     expect(full.messages.map((message) => message._ === 'message' ? message.message : '')).toEqual([
@@ -983,7 +978,7 @@ describe('DialogRpc', () => {
     const platform = new DialogTestPlatform()
     const getDialogs = vi.spyOn(platform, 'getDialogs')
     const rpc = new DialogRpc(platform, session)
-    const aliceId = stableId('peer:alice')
+    const aliceId = peerStableId('alice')
     const peer = { _: 'inputPeerUser' as const, userId: aliceId, accessHash: Long.ZERO }
 
     await Promise.all([
@@ -1003,7 +998,7 @@ describe('DialogRpc', () => {
 
   it('serves desktop search, read-state, and scheduled-history requests', async () => {
     const rpc = new DialogRpc(new DialogTestPlatform(), session)
-    const peer = { _: 'inputPeerUser' as const, userId: stableId('peer:alice'), accessHash: Long.ZERO }
+    const peer = { _: 'inputPeerUser' as const, userId: peerStableId('alice'), accessHash: Long.ZERO }
     const request: tl.messages.RawSearchRequest = {
       _: 'messages.search', peer, q: 'how', filter: { _: 'inputMessagesFilterEmpty' },
       minDate: 0, maxDate: 0, offsetId: 0, addOffset: 0, limit: 100,
@@ -1028,7 +1023,7 @@ describe('DialogRpc', () => {
       async (_session, event, options) => { localEvents.push({ event, options }) },
       'source-auth-key',
     )
-    const peer = { _: 'inputPeerUser' as const, userId: stableId('peer:alice'), accessHash: Long.ZERO }
+    const peer = { _: 'inputPeerUser' as const, userId: peerStableId('alice'), accessHash: Long.ZERO }
     const history = await rpc.getHistory(getHistoryRequest(peer.userId)) as tl.messages.RawMessages
     const newest = history.messages[0] as tl.RawMessage
     const requester = {} as ServerConnection
@@ -1056,7 +1051,7 @@ describe('DialogRpc', () => {
       await new Promise<void>((resolve) => { release = resolve })
     })
     const rpc = new DialogRpc(platform, session)
-    const peer = { _: 'inputPeerUser' as const, userId: stableId('peer:alice'), accessHash: Long.ZERO }
+    const peer = { _: 'inputPeerUser' as const, userId: peerStableId('alice'), accessHash: Long.ZERO }
     const history = await rpc.getHistory(getHistoryRequest(peer.userId)) as tl.messages.RawMessages
     const newest = history.messages[0] as tl.RawMessage
     let completed = false
@@ -1374,7 +1369,7 @@ describe('DialogRpc', () => {
   it('sends exactly once per random ID and exposes the outgoing message in history', async () => {
     const platform = new DialogTestPlatform()
     const rpc = new DialogRpc(platform, session)
-    const aliceId = stableId('peer:alice')
+    const aliceId = peerStableId('alice')
     const request = sendMessageRequest(aliceId)
 
     const first = await rpc.sendMessage(request) as tl.RawUpdates
@@ -1757,7 +1752,7 @@ describe('DialogRpc', () => {
       metadata: {}, updatedAt: new Date(),
     })
 
-    const channelId = stableId(`peer:${collisionId}`)
+    const channelId = peerStableId(collisionId)
     const history = await rpc.getHistory({
       _: 'messages.getHistory',
       peer: { _: 'inputPeerChannel', channelId, accessHash: Long.ONE },
@@ -1857,9 +1852,9 @@ describe('DialogRpc', () => {
 
 describe('stableId', () => {
   it('is deterministic, positive, and namespaces different entities', () => {
-    expect(stableId('peer:alice')).toBe(stableId('peer:alice'))
-    expect(stableId('peer:alice')).toBeGreaterThan(0)
-    expect(stableId('peer:alice')).toBeLessThanOrEqual(0x7fffffff)
-    expect(stableId('peer:alice')).not.toBe(stableId('message:alice'))
+    expect(peerStableId('alice')).toBe(peerStableId('alice'))
+    expect(peerStableId('alice')).toBeGreaterThan(0)
+    expect(peerStableId('alice')).toBeLessThanOrEqual(0x7fffffff)
+    expect(peerStableId('alice')).not.toBe(stableId('message:alice'))
   })
 })

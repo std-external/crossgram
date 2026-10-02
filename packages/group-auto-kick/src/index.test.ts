@@ -12,7 +12,7 @@ import { GroupAutoKickRunner, telegramChannelIdFor, type Config } from './index.
 const PLATFORM_ID = 'qqnt'
 const GROUP_CODE = '1002974327'
 const GROUP_TITLE = '#1 测试群'
-const GROUP_CHAT_ID = String(-1_000_000_000_000 - telegramChannelIdFor(GROUP_CODE))
+const GROUP_CHAT_ID = String(-1_000_000_000_000 - telegramChannelIdFor('session', GROUP_CODE))
 const CONVERSATION_ROW_ID = 7
 
 const session: PlatformSession = {

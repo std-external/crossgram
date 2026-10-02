@@ -4026,7 +4026,7 @@ export class DialogRpc {
     const id = this._userToTl.get(platformUserId)
     if (id !== undefined) return id
     if (!this._store) {
-      const allocated = this._allocate(`peer:${platformUserId}`, this._tlToUser)
+      const allocated = this._allocate(peerTlSeed(this._session.platformSessionId, platformUserId), this._tlToUser)
       this._userToTl.set(platformUserId, allocated)
       this._tlToUser.set(allocated, platformUserId)
       return allocated
@@ -4358,6 +4358,7 @@ export class DialogRpc {
       )
       return {
         message: projectTlMessage({
+          platformSessionId: this._session.platformSessionId,
           conversation,
           source: projectedSource,
           tlId,
@@ -5461,7 +5462,12 @@ export class DialogRpc {
   private _peerId(peerId: string): number {
     const existing = this._peerToTl.get(peerId)
     if (existing !== undefined) return existing
-    const id = this._allocate(`peer:${peerId}`, this._tlToPeer)
+    // Scope synthetic peer IDs to the platform session: two accounts of the
+    // same platform sitting in the same native conversation (e.g. two QQ
+    // logins in one group) must project to two separate Telegram chats.
+    // Without the session prefix both hash to one channel whose message IDs
+    // then interleave along two non-monotonic allocation tracks.
+    const id = this._allocate(peerTlSeed(this._session.platformSessionId, peerId), this._tlToPeer)
     this._peerToTl.set(peerId, id)
     this._tlToPeer.set(id, peerId)
     return id
@@ -6026,6 +6032,11 @@ function messageHasLink(message: IMMessage): boolean {
   })
 }
 
+/** Seed for a synthetic Telegram peer/user ID, scoped to one platform session. */
+export function peerTlSeed(platformSessionId: string, platformPeerId: string): string {
+  return `peer:${platformSessionId}:${platformPeerId}`
+}
+
 /** Stable positive signed-int ID used for synthetic Telegram entities. */
 export function stableId(value: string): number {
   let hash = 0x811c9dc5
@@ -6065,6 +6076,7 @@ export function makeTlCardPreview(
 }
 
 export function projectTlMessage(options: {
+  platformSessionId?: string
   conversation?: IMConversation
   source: IMProjectableMessage
   tlId: number
@@ -6086,12 +6098,14 @@ export function projectTlMessage(options: {
   userId?: (platformUserId: string) => number | undefined
 }): tl.TypeMessage {
   const {
-    conversation, source, tlId, ordinal,
+    platformSessionId, conversation, source, tlId, ordinal,
     groupedId, fromId, peerId, media, richMessage, entities, reactions, replyToTlId, topicId,
     mentioned, unreadMention, recalled, recalledVisible,
   } = options
   if (!peerId && !conversation) throw new TypeError('message projection requires a Telegram peer target')
-  const conversationId = conversation ? stableId(`peer:${conversation.id}`) : undefined
+  const conversationId = conversation
+    ? stableId(platformSessionId ? peerTlSeed(platformSessionId, conversation.id) : `peer:${conversation.id}`)
+    : undefined
   const replyTo: tl.RawMessageReplyHeader | undefined = topicId && topicId !== tlId
     ? {
         _: 'messageReplyHeader', forumTopic: true,

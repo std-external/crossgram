@@ -383,7 +383,7 @@ export class GroupAutoKickRunner {
     })
     for (const row of rows) {
       if (row.kind !== 'group') continue
-      if (!conversationIdMatches(rule.conversationId, row.platformConversationId)) continue
+      if (!conversationIdMatches(rule.conversationId, binding.session.platformSessionId, row.platformConversationId)) continue
       return { id: Number(row.id), platformConversationId: row.platformConversationId, title: row.title }
     }
   }

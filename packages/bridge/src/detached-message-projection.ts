@@ -67,6 +67,7 @@ export async function projectDetachedMessage(
       }
       return {
         message: projectTlMessage({
+          platformSessionId: input.session.platformSessionId,
           source,
           tlId: tlMessageId,
           ordinal,
