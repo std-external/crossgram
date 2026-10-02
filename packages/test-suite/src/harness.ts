@@ -29,6 +29,7 @@ export async function startApp(options: {
   bridgeConfig?: bridge.BridgeConfig
   platform?: { id: string, adapter: bridge.IMPlatform }
   botApi?: boolean
+  wsPort?: number
 } = {}) {
   const rsaKey = options.rsaKey ?? generateRsaKeyPair()
   addPublicKey(crypto, rsaKey.publicKeyPem, false)
@@ -41,6 +42,7 @@ export async function startApp(options: {
     ctx.plugin(Mtproto, {
       port: 0, host: '127.0.0.1', rsaKey, log,
       authKeyStorePath: options.authKeyStorePath,
+      ...(options.wsPort !== undefined ? { wsPort: options.wsPort } : {}),
     }),
     ctx.plugin(DatabaseUpdateStore, { retention: 10_000 }),
     ctx.plugin(bridge, options.bridgeConfig ?? {}),
@@ -63,7 +65,7 @@ export async function startApp(options: {
   await new Promise((r) => setTimeout(r, 100)) // let fibers settle
   const pubKey = findKeyByFingerprints([rsaKey.fingerprint])!
   const stop = async () => { for (const f of fibers.reverse()) await Promise.resolve((f as any).dispose?.()) }
-  return { ctx, port: ctx.mtproto.port, pubKey, rsaKey, stop }
+  return { ctx, port: ctx.mtproto.port, wsPort: ctx.mtproto.wsPort, pubKey, rsaKey, stop }
 }
 
 export async function waitForPlatformLogin(ctx: Context, platformId: string) {

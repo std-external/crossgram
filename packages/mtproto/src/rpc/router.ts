@@ -23,6 +23,9 @@ export function registerRpcRoute(ctx: Context, method: string, handler: RpcHandl
   }, { prepend: true })
 }
 
+/** Methods already reported as unimplemented, so each logs only once. */
+const warnedNotImplemented = new Set<string>()
+
 /** Run the Cordis middleware and method-route events for one normalized request. */
 export async function dispatchRpcRoute(
   ctx: CordisServerRpcContext,
@@ -36,6 +39,10 @@ export async function dispatchRpcRoute(
       () => ctx.events.serial(ctx, 'mtproto/rpc/method', request._, request),
     ) as RpcResult | undefined
     if (result !== undefined) return result
+    if (!warnedNotImplemented.has(request._)) {
+      warnedNotImplemented.add(request._)
+      ctx.logger.warn('rpc method not implemented: %s', request._)
+    }
     return toRpcError(RpcErrors.notImplemented(request._))
   } catch (error) {
     if (isRpcError(error)) return toRpcError(error)

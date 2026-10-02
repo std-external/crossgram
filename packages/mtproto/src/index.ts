@@ -24,6 +24,8 @@ export {
 export { RpcError, RpcErrors, toRpcError, isRpcError } from './rpc/errors.js'
 
 export { ServerConnection } from './transport/server-connection.js'
+export type { ServerTransportSocket } from './transport/server-socket.js'
+export { WebSocketBridge, listenWebSocketServer } from './transport/ws-server.js'
 export { AbridgedPacketCodec, ServerObfuscatedCodec, createServerObfuscation } from './transport/server-obfuscation.js'
 export { MemoryAuthKeyStore, FileAuthKeyStore, type AuthKeyStore, type StoredAuthKey } from './session/auth-key-store.js'
 export { ServerSession } from './session/server-session.js'

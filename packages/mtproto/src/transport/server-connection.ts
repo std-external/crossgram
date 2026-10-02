@@ -1,4 +1,4 @@
-import type { Socket } from 'node:net'
+import type { ServerTransportSocket } from './server-socket.js'
 import type { IPacketCodec } from '@mtcute/core'
 import type { ICryptoProvider, Logger } from '@mtcute/core/utils.js'
 import { IntermediatePacketCodec, PaddedIntermediatePacketCodec } from '@mtcute/core'
@@ -81,7 +81,7 @@ export class ServerConnection {
   }
 
   constructor(
-    private readonly _socket: Socket,
+    private readonly _socket: ServerTransportSocket,
     private readonly _crypto: ICryptoProvider,
     private readonly _log: Logger,
     private readonly _onTraffic?: (sample: TransportTrafficSample) => void,

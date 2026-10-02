@@ -1,5 +1,5 @@
 import { Context, Service, type Fiber } from 'cordis'
-import { Server, type Socket } from 'node:net'
+import { Server } from 'node:net'
 import { resolve } from 'node:path'
 import { __tlWriterMap, LogManager, type ICryptoProvider, type Logger } from '@mtcute/core/utils.js'
 import type { tl } from '@mtcute/core'
@@ -8,6 +8,8 @@ import { NodeCryptoProvider } from '@mtcute/node/utils.js'
 import Long from 'long'
 import { getServerReaderMap } from './rpc/server-reader-map.js'
 import { ServerConnection } from './transport/server-connection.js'
+import type { ServerTransportSocket } from './transport/server-socket.js'
+import { listenWebSocketServer, type WebSocketServerHandle } from './transport/ws-server.js'
 import { RpcDependencyRegistry, ServerSession } from './session/server-session.js'
 import { PqChallengeStore } from './session/server-authorization.js'
 import {
@@ -27,6 +29,8 @@ import zhCN from './locales/zh-CN.yml'
 export interface MtprotoConfig {
   /** TCP port to listen on (default: 4430; 0 = ephemeral) */
   port?: number
+  /** WebSocket port for browser clients (omitted = disabled; 0 = ephemeral) */
+  wsPort?: number
   /** Host to bind to (default: 127.0.0.1) */
   host?: string
   /** Crypto provider (default: NodeCryptoProvider) */
@@ -57,6 +61,7 @@ export interface MtprotoConfig {
 
 export const Config = z.object({
   port: z.natural().max(65_535).default(4430),
+  wsPort: z.natural().max(65_535),
   host: z.string().default('127.0.0.1'),
   rsaKeyPath: z.string(),
   authKeyStorePath: z.string(),
@@ -110,14 +115,15 @@ export class Mtproto extends Service {
   private readonly _authKeyData = new AuthKeyDataStore()
   private readonly _log: Logger
   private readonly _sessions = new Set<ServerSession>()
-  private readonly _sockets = new Set<Socket>()
-  private readonly _socketRecords = new Map<Socket, SocketRecord>()
+  private readonly _sockets = new Set<ServerTransportSocket>()
+  private readonly _socketRecords = new Map<ServerTransportSocket, SocketRecord>()
   private readonly _connectionFibers = new Map<string, Fiber>()
   private readonly _authApiLayers = new Map<string, number>()
   private readonly _rpcDependencies = new RpcDependencyRegistry()
   private readonly _pqChallenges = new PqChallengeStore()
   private _connectionSeq = 0
   private _server: Server | null = null
+  private _wsServer: WebSocketServerHandle | null = null
   private readonly _maxConnections: number
   private readonly _maxConnectionsPerIp: number
   private readonly _connectionIdleTimeoutMs: number
@@ -160,6 +166,11 @@ export class Mtproto extends Service {
   get port(): number {
     const addr = this._server?.address()
     return addr && typeof addr === 'object' ? addr.port : (this.config.port ?? 4430)
+  }
+
+  /** The actually bound WebSocket port, or `null` when the WS transport is off. */
+  get wsPort(): number | null {
+    return this._wsServer?.port ?? null
   }
 
   /** Number of currently open MTProto transport connections. */
@@ -309,6 +320,14 @@ export class Mtproto extends Service {
       })
     })
 
+    if (this.config.wsPort !== undefined) {
+      this._wsServer = await listenWebSocketServer(
+        { host, port: this.config.wsPort },
+        (socket) => this._handleConnection(socket),
+      )
+      this._log.info('websocket listening on %s:%d', host, this._wsServer.port)
+    }
+
     const stallWatcher = setInterval(() => {
       this._pruneIdleState()
       for (const session of this._sessions) {
@@ -338,6 +357,8 @@ export class Mtproto extends Service {
         server.close(() => resolve())
       })
       this._server = null
+      await this._wsServer?.close()
+      this._wsServer = null
     }
   }
 
@@ -352,7 +373,7 @@ export class Mtproto extends Service {
     this._rpcDependencies.prune()
   }
 
-  private _handleConnection(socket: Socket): void {
+  private _handleConnection(socket: ServerTransportSocket): void {
     const connectionId = `conn-${++this._connectionSeq}`
     const record: SocketRecord = {
       connectionId,
@@ -382,10 +403,10 @@ export class Mtproto extends Service {
     })
   }
 
-  private _openConnection(ctx: Context, socket: Socket, connectionId: string) {
+  private _openConnection(ctx: Context, socket: ServerTransportSocket, connectionId: string) {
     const connLog = this._log.create(`conn:${socket.remoteAddress}:${socket.remotePort}`)
-    socket.setNoDelay(true)
-    socket.setKeepAlive(true, this._keepAliveInitialDelayMs)
+    socket.setNoDelay?.(true)
+    socket.setKeepAlive?.(true, this._keepAliveInitialDelayMs)
 
     let connectionCtx!: Context
     let scope!: MtprotoConnectionScope
@@ -410,7 +431,7 @@ export class Mtproto extends Service {
         }
       : undefined
     if (idleTimeout) {
-      socket.setTimeout(this._connectionIdleTimeoutMs)
+      socket.setTimeout?.(this._connectionIdleTimeoutMs)
       socket.on('timeout', idleTimeout)
     }
     scope = {
@@ -509,14 +530,14 @@ export class Mtproto extends Service {
     return count
   }
 
-  private _oldestSocket(predicate: (record: SocketRecord) => boolean): [Socket, SocketRecord] | undefined {
+  private _oldestSocket(predicate: (record: SocketRecord) => boolean): [ServerTransportSocket, SocketRecord] | undefined {
     for (const entry of this._socketRecords) {
       if (predicate(entry[1])) return entry
     }
   }
 
   private _evictSocket(
-    socket: Socket,
+    socket: ServerTransportSocket,
     record: SocketRecord,
     reason: string,
     incoming: SocketRecord,
