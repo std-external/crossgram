@@ -1,3 +1,4 @@
+/// <reference path="./cordis.d.ts" />
 import type { Context } from 'cordis'
 import type { tl } from '@mtcute/core'
 import { resolve } from 'node:path'
