@@ -460,8 +460,6 @@ export class PlatformSubscriptionManager {
           })),
         )
         for (const { source } of messages) {
-          const hasText = source.content.parts.some((part) => part.type === 'text' && part.text)
-          if (!hasText && this._recalledMessageMode === 'show') continue
           const message = markRecalledMessage(source)
           const result = await this._store.ingest(session, event.conversation, message)
           const eventId = `qqnt-recall:${encodeURIComponent(event.conversation.id)}:${encodeURIComponent(source.id)}`

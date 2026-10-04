@@ -379,21 +379,32 @@ describe('PlatformSubscriptionManager', () => {
       content: { parts: [{ type: 'media', media: { id: 'photo-only', kind: 'image' } }] },
     }
     await qq.emit({ type: 'message', conversation, message: mediaOnly })
+    const mediaOnlyOriginalId = ((sent.at(-1) as tl.RawUpdates).updates[0] as tl.RawUpdateNewChannelMessage).message.id
     const beforeIgnoredDeletes = sent.length
     await qq.emit({
       type: 'message-delete', eventId: 'qq-unmapped', conversation,
       messageIds: ['unmapped'], timestamp: 9,
     })
+    expect(sent).toHaveLength(beforeIgnoredDeletes)
     await qq.emit({
       type: 'message-delete', eventId: 'qq-media-only', conversation,
       messageIds: [mediaOnly.id], timestamp: 10,
     })
-    expect(sent).toHaveLength(beforeIgnoredDeletes)
+    expect(sent).toHaveLength(beforeIgnoredDeletes + 1)
+    expect((sent.at(-1) as tl.RawUpdates).updates).toMatchObject([{
+      _: 'updateEditChannelMessage',
+      message: { id: mediaOnlyOriginalId, recalled: true, recalledVisible: true },
+    }])
     const storedMediaOnly = (await store.readHistory(qqSession.platformSessionId, conversation.id))
       .find((message) => message.id === mediaOnly.id)
     expect(storedMediaOnly).toMatchObject({
-      id: mediaOnly.id, content: { parts: [{ type: 'media' }] },
+      id: mediaOnly.id, recalled: true, content: { parts: [{ type: 'media' }] },
     })
+    await qq.emit({
+      type: 'message-delete', eventId: 'qq-media-only-duplicate', conversation,
+      messageIds: [mediaOnly.id], timestamp: 11,
+    })
+    expect(sent).toHaveLength(beforeIgnoredDeletes + 1)
 
     const localDelete = incoming('qq-local-delete', conversation.id)
     await manager.ingestLocalEvent(qqSession, { type: 'message', conversation, message: localDelete }, {

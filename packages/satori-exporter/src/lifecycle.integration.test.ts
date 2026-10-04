@@ -120,7 +120,24 @@ describe('standalone Satori exporter lifecycle', () => {
     })
     await vi.waitFor(() => expect(deleted).toEqual(['incoming:1']))
 
-    expect(authors).toMatchObject([{
+    await platform.emit({
+      type: 'message',
+      conversation: { id: 'group:42', kind: 'group', title: 'Group 42' },
+      message: {
+        id: 'incoming:image', conversationId: 'group:42', senderId: 'alice', timestamp: 3,
+        sender: { id: 'alice', firstName: 'Alice' },
+        content: { parts: [{ type: 'media', media: { id: 'photo-1', kind: 'image', mimeType: 'image/jpeg' } }] },
+      },
+    })
+    await vi.waitFor(() => expect(received).toEqual(['incoming:1', 'incoming:image']))
+    await platform.emit({
+      type: 'message-delete', eventId: 'recall:image',
+      conversation: { id: 'group:42', kind: 'group', title: 'Group 42' },
+      messageIds: ['incoming:image'], timestamp: 4,
+    })
+    await vi.waitFor(() => expect(deleted).toEqual(['incoming:1', 'incoming:image']))
+
+    expect(authors.slice(0, 1)).toMatchObject([{
       id: 'alice', username: 'Alice', nickname: '群名片', avatar: 'https://q1.qlogo.cn/g?b=qq&nk=10001&s=640',
     }])
 
@@ -140,7 +157,7 @@ describe('standalone Satori exporter lifecycle', () => {
         })],
       }), undefined,
     ))
-    expect(received).toEqual(['incoming:1'])
+    expect(received).toEqual(['incoming:1', 'incoming:image'])
 
     unregister()
     await vi.waitFor(() => expect(ctx.bots).toHaveLength(0))
