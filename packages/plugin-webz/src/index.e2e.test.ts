@@ -37,6 +37,16 @@ async function startSite(config: Partial<Config> & Pick<Config, 'root'>) {
   }
 }
 
+/** Stands in for the WebUI plugin: defers first, then claims what remains. */
+function siblingRoute(ctx: Context): void {
+  ctx.server.get('{/*path}', async (req, _res, next) => {
+    const prior = await next()
+    if (prior) return prior
+    return new Response('sibling', { status: 200 })
+  })
+}
+siblingRoute.inject = ['server']
+
 describe('plugin-webz static site', () => {
   let dir: string
   beforeEach(async () => {
@@ -108,6 +118,48 @@ describe('plugin-webz static site', () => {
       expect(await (await fetch(`${site.url}/app.js`)).text()).not.toContain('webz')
     } finally {
       await site.stop()
+    }
+  })
+
+  it('redirects the bare prefix to its trailing-slash form', async () => {
+    const site = await startSite({ root: dir, path: '/webz' })
+    try {
+      const response = await fetch(`${site.url}/webz`, { redirect: 'manual' })
+      expect(response.status).toBe(302)
+      expect(response.headers.get('location')).toBe('/webz/')
+    } finally {
+      await site.stop()
+    }
+  })
+
+  it('serves the site root under a trailing-slash prefix', async () => {
+    const site = await startSite({ root: dir, path: '/webz' })
+    try {
+      const response = await fetch(`${site.url}/webz/`)
+      expect(response.status).toBe(200)
+      expect(await response.text()).toContain('WebZ')
+      // nested assets resolve relative to the prefix
+      expect(await (await fetch(`${site.url}/webz/assets/chunk.css`)).text()).toBe('body{color:red}')
+    } finally {
+      await site.stop()
+    }
+  })
+
+  it('yields to a sibling route that claims the same wildcard', async () => {
+    const ctx = new Context()
+    const fibers = [
+      ctx.plugin(Server, { host: '127.0.0.1', port: 0 }),
+      // registered first, like the WebUI plugin: defers to later routes, then
+      // claims everything it is left with (i.e. everything but /webz)
+      ctx.plugin(siblingRoute),
+      ctx.plugin(apply, { root: dir, path: '/webz', spa: true }),
+    ]
+    await Promise.all(fibers)
+    try {
+      expect(await (await fetch(`${ctx.server.baseUrl}/other`)).text()).toBe('sibling')
+      expect(await (await fetch(`${ctx.server.baseUrl}/webz/app.js`)).text()).toContain('webz')
+    } finally {
+      for (const fiber of fibers.reverse()) await fiber.dispose()
     }
   })
 

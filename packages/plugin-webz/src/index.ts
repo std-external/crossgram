@@ -61,9 +61,18 @@ function apply(ctx: Context, config: Config): void {
   const spa = config.spa ?? true
 
   ctx.server.get('{/*path}', async (req, res, next) => {
-    const prior = await next()
-    if (prior || res.claimed) return prior
-    if (prefix && req.path !== prefix && !req.path.startsWith(`${prefix}/`)) return
+    // Only engage for our own prefix; every other path belongs to the plugins
+    // around us (the WebUI keeps the site root, for instance).
+    if (prefix && req.path !== prefix && !req.path.startsWith(`${prefix}/`)) return next()
+    if (!prefix) {
+      // Mounted at the root: defer once so a co-mounted plugin can claim first.
+      const prior = await next()
+      if (prior || res.claimed) return prior
+    }
+
+    // A relative base (`./assets/...`) only resolves under the trailing-slash
+    // form, so redirect the bare prefix before serving anything.
+    if (prefix && req.path === prefix) return redirect(`${prefix}/`)
 
     const route = req.path.slice(prefix.length) || '/'
     const target = resolveFile(root, route)
@@ -75,17 +84,24 @@ function apply(ctx: Context, config: Config): void {
       try {
         if (!file || !(await stat(file)).isFile()) throw new Error('no index')
       } catch {
-        res.status = 404
-        res.body = 'Not Found'
-        return
+        return new Response('Not Found', { status: 404 })
       }
     }
 
     const body = await readFile(file)
-    res.headers.set('content-type', MIME_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream')
-    res.headers.set('cache-control', cacheControl(file))
-    res.body = body
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': MIME_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+        'cache-control': cacheControl(file),
+      },
+    })
   })
+}
+
+/** Temporary redirect that keeps the browser on the same host and scheme. */
+function redirect(location: string): Response {
+  return new Response(null, { status: 302, headers: { location } })
 }
 
 /** Resolve a URL path to a file inside `root`, or `undefined` if it escapes. */
