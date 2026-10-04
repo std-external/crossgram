@@ -62,21 +62,11 @@ export const startupRpcHandlers: Readonly<Record<string, StartupHandler>> = {
     _: 'stories.stories', count: 0, stories: [], chats: [], users: [],
   } as unknown as tl.TlObject),
   // Telegram Web loads its language pack and optional monetization /
-  // community resources at startup; empty answers keep it from retrying
-  // METHOD_NOT_IMPLEMENTED forever. `auth.initPasskeyLogin` stays unregistered:
-  // the error makes Web clients fall back to QR login.
-  'langpack.getLangPack': (request) => ({
-    _: 'langPackDifference',
-    langCode: (request as { langCode?: string } | undefined)?.langCode ?? '',
-    fromVersion: 0, version: 0, strings: [],
-  } as unknown as tl.TlObject),
-  'langpack.getLanguage': (request) => ({
-    _: 'langPackLanguage',
-    langCode: (request as { langCode?: string } | undefined)?.langCode ?? '',
-    name: 'English', nativeName: 'English', pluralCode: 'en',
-    stringsCount: 0, translatedCount: 0, translationsUrl: '',
-  } as unknown as tl.TlObject),
-  'langpack.getStrings': () => bareVector([]) as unknown as tl.TlObject,
+  // community resources at startup. The `langpack.*` methods are deliberately
+  // NOT answered: an empty-but-successful pack is cached and overrides the
+  // strings bundled in the client, while a failure makes the client use those
+  // bundled strings. `auth.initPasskeyLogin` stays unregistered for the same
+  // reason — the error makes Web clients fall back to QR login.
   'help.getCountriesList': () => ({
     _: 'help.countriesList', hash: 0, countries: COUNTRIES,
   } as unknown as tl.TlObject),
