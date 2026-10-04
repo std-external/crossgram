@@ -30,8 +30,14 @@ function apply(ctx: Context, config: Config): void {
   const secret = randomBytes(32)
   const token = createHmac('sha256', secret).update('crossgram-webui-auth').digest('base64url')
 
-  const isPublic = (path: string) =>
-    publicPaths.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+  // A trailing `*` matches a bare prefix (`/bot*` covers `/bot<token>/...`);
+  // without it a match must end at a path boundary, so `/webz` never opens up
+  // `/webzanything` to the site behind the gate.
+  const isPublic = (path: string) => publicPaths.some((entry) => (
+    entry.endsWith('*')
+      ? path.startsWith(entry.slice(0, -1))
+      : path === entry || path.startsWith(`${entry}/`)
+  ))
 
   const isAuthed = (req: Request): boolean => {
     const header = req.headers.get('cookie') ?? ''

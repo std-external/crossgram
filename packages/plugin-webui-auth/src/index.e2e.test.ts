@@ -102,6 +102,31 @@ describe('plugin-webui-auth', () => {
     expect(await response.text()).not.toContain('<form method="POST" action="/__auth"')
   })
 
+  it('opens a bare-prefix entry only when it carries a trailing star', async () => {
+    const site = await launch({ publicPaths: ['/bot*'] })
+    try {
+      // `/bot<token>/<method>` has no separator after the prefix
+      const allowed = await fetch(`${site.url}/bot123:abc/getMe`, { headers: { accept: 'text/html' } })
+      expect(await allowed.text()).not.toContain('<form method="POST" action="/__auth"')
+      // a path that merely shares the prefix is still gated
+      const gated = await fetch(`${site.url}/bot`, { headers: { accept: 'text/html' } })
+      expect(await gated.text()).not.toContain('admin area')
+    } finally {
+      await site.stop()
+    }
+  })
+
+  it('treats a boundary prefix as a whole segment', async () => {
+    const site = await launch({ publicPaths: ['/webz'] })
+    try {
+      // `/webz` must not open up `/webzx`, which the catch-all would otherwise serve
+      const response = await fetch(`${site.url}/webzx`, { headers: { accept: 'text/html' } })
+      expect(await response.text()).toContain('<form method="POST" action="/__auth"')
+    } finally {
+      await site.stop()
+    }
+  })
+
   it('does not accept a forged cookie', async () => {
     const site = await launch()
     const response = await fetch(`${site.url}/admin`, {
