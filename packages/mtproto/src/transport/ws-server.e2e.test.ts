@@ -10,6 +10,7 @@ import { NodePlatform } from '@mtcute/node'
 import Long from 'long'
 import { get as httpGet } from 'node:http'
 import { Context } from 'cordis'
+import Server from '@cordisjs/plugin-server'
 import WebSocket, { type RawData } from 'ws'
 import { Mtproto } from '../service.js'
 import { AbridgedPacketCodec } from './server-obfuscation.js'
@@ -252,6 +253,73 @@ describe('websocket transport', () => {
       expect(await httpStatus(wsPort, '/')).toBe(426)
     } finally {
       await stop()
+    }
+  })
+})
+
+/** Serve MTProto-over-WS on the shared HTTP server, as the hosted web client does. */
+async function startSameOriginServer(path = '/apiws') {
+  await crypto.initialize?.()
+  const rsaKey = generateRsaKeyPair()
+  addPublicKey(crypto, rsaKey.publicKeyPem, false)
+  const ctx = new Context()
+  const fibers = [
+    ctx.plugin(Server, { host: '127.0.0.1', port: 0 }),
+    ctx.plugin(Mtproto, { port: 0, host: '127.0.0.1', rsaKey, log, wsPath: path }),
+  ]
+  await Promise.all(fibers)
+  const port = Number(new URL(ctx.server.baseUrl).port)
+  return {
+    port,
+    path,
+    fingerprint: Long.fromString(rsaKey.fingerprint, true, 16),
+    stop: async () => { for (const fiber of [...fibers].reverse()) await fiber.dispose() },
+  }
+}
+
+describe('same-origin websocket', () => {
+  it('answers req_pq on the shared http server at the configured path', async () => {
+    const server = await startSameOriginServer()
+    try {
+      const client = await WsTestClient.connect(server.port, server.path)
+      const nonce = crypto.randomBytes(16)
+      await client.send(plainReqPq(nonce, 3))
+      const { object } = await readPlainMessage(client)
+      expect(object._).toBe('mt_resPQ')
+      expect(object.nonce).toEqual(nonce)
+      expect(object.serverPublicKeyFingerprints.some(
+        (fp: Long) => fp.low === server.fingerprint.low && fp.high === server.fingerprint.high)).toBe(true)
+      client.close()
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('serves ordinary http routes beside the websocket path', async () => {
+    const server = await startSameOriginServer('/apiws')
+    try {
+      // the upgrade route must not shadow normal requests to other paths
+      expect(await httpStatus(server.port, '/')).toBe(404)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('does not enable the shared route when wsPath is unset', async () => {
+    await crypto.initialize?.()
+    const rsaKey = generateRsaKeyPair()
+    addPublicKey(crypto, rsaKey.publicKeyPem, false)
+    const ctx = new Context()
+    const fibers = [
+      ctx.plugin(Server, { host: '127.0.0.1', port: 0 }),
+      ctx.plugin(Mtproto, { port: 0, host: '127.0.0.1', rsaKey, log }),
+    ]
+    await Promise.all(fibers)
+    try {
+      const port = Number(new URL(ctx.server.baseUrl).port)
+      await expect(WsTestClient.connect(port, '/apiws')).rejects.toBeTruthy()
+    } finally {
+      for (const fiber of [...fibers].reverse()) await fiber.dispose()
     }
   })
 })

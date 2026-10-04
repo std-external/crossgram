@@ -1,5 +1,6 @@
 import { Context, Service, type Fiber } from 'cordis'
 import { Server } from 'node:net'
+import type { IncomingMessage } from 'node:http'
 import { resolve } from 'node:path'
 import { __tlWriterMap, LogManager, type ICryptoProvider, type Logger } from '@mtcute/core/utils.js'
 import type { tl } from '@mtcute/core'
@@ -9,7 +10,8 @@ import Long from 'long'
 import { getServerReaderMap } from './rpc/server-reader-map.js'
 import { ServerConnection } from './transport/server-connection.js'
 import type { ServerTransportSocket } from './transport/server-socket.js'
-import { listenWebSocketServer, type WebSocketServerHandle } from './transport/ws-server.js'
+import { listenWebSocketServer, WebSocketBridge, type WebSocketServerHandle } from './transport/ws-server.js'
+import type { WebSocket } from 'ws'
 import { RpcDependencyRegistry, ServerSession } from './session/server-session.js'
 import { PqChallengeStore } from './session/server-authorization.js'
 import {
@@ -31,6 +33,11 @@ export interface MtprotoConfig {
   port?: number
   /** WebSocket port for browser clients (omitted = disabled; 0 = ephemeral) */
   wsPort?: number
+  /**
+   * Serve MTProto-over-WebSocket at this path on the shared Cordis HTTP server,
+   * so a browser client hosted by that server connects to its own origin.
+   */
+  wsPath?: string
   /** Host to bind to (default: 127.0.0.1) */
   host?: string
   /** Crypto provider (default: NodeCryptoProvider) */
@@ -62,6 +69,7 @@ export interface MtprotoConfig {
 export const Config = z.object({
   port: z.natural().max(65_535).default(4430),
   wsPort: z.natural().max(65_535),
+  wsPath: z.string(),
   host: z.string().default('127.0.0.1'),
   rsaKeyPath: z.string(),
   authKeyStorePath: z.string(),
@@ -86,6 +94,14 @@ interface SocketRecord {
   remoteAddress: string
   remotePort?: number
   connectedAt: number
+}
+
+/** The slice of a Cordis HTTP server this service borrows for same-origin WS. */
+interface WsCapableServer {
+  ws(path: string, handler: (
+    req: { _req: IncomingMessage },
+    accept: () => Promise<WebSocket>,
+  ) => unknown): unknown
 }
 
 interface ConnectionFiberConfig {
@@ -326,6 +342,19 @@ export class Mtproto extends Service {
         (socket) => this._handleConnection(socket),
       )
       this._log.info('websocket listening on %s:%d', host, this._wsServer.port)
+    }
+
+    if (this.config.wsPath) {
+      // Optional dependency: only apps that also host an HTTP server (the web
+      // client) get the same-origin endpoint, and tests without one still run.
+      this.ctx.inject(['server'], (ctx) => {
+        const wsServer = (ctx as unknown as { server: WsCapableServer }).server
+        const path = this.config.wsPath!
+        wsServer.ws(path, async (req, accept) => {
+          const ws = await accept()
+          this._handleConnection(new WebSocketBridge(ws, req._req))
+        })
+      })
     }
 
     const stallWatcher = setInterval(() => {
