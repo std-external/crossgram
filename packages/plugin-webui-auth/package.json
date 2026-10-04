@@ -1,0 +1,23 @@
+{
+  "name": "@mtproto-relay/plugin-webui-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "cordis": {
+    "service": {
+      "required": [
+        "server"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "cordis": "^4.0.0-rc.5"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}
