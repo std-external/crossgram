@@ -1,6 +1,8 @@
 import type { Context } from 'cordis'
 import type { Request, Response } from '@cordisjs/plugin-server'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import z from 'schemastery'
 
 export interface Config {
@@ -10,12 +12,18 @@ export interface Config {
   publicPaths?: string[]
   /** How long a successful login stays valid (default: 7 days). */
   sessionTtlMs?: number
+  /**
+   * File holding the cookie-signing secret (created on first use, mode 0600).
+   * Without it the secret is per-process and every restart logs clients out.
+   */
+  secretPath?: string
 }
 
 export const Config = z.object({
   password: z.string().required(),
   publicPaths: z.array(z.string()).default(['/webz']),
   sessionTtlMs: z.natural().default(7 * 24 * 3600_000),
+  secretPath: z.string(),
 })
 
 const COOKIE_NAME = 'crossgram_auth'
@@ -25,10 +33,11 @@ function apply(ctx: Context, config: Config): void {
   const password = config.password
   const publicPaths = config.publicPaths ?? ['/webz']
   const maxAgeSec = Math.floor((config.sessionTtlMs ?? 7 * 24 * 3600_000) / 1000)
-  // A per-process secret keeps the cookie unguessable without storing sessions;
-  // restarting the process invalidates every login, which is acceptable here.
-  const secret = randomBytes(32)
-  const token = createHmac('sha256', secret).update('crossgram-webui-auth').digest('base64url')
+  // The cookie is a stateless HMAC, so its value is fixed for a given secret and
+  // password: persisted to `secretPath` it survives restarts, and rotating the
+  // password invalidates every outstanding cookie.
+  const secret = loadSecret(config.secretPath)
+  const token = createHmac('sha256', secret).update(`crossgram-webui-auth:${password}`).digest('base64url')
 
   // A trailing `*` matches a bare prefix (`/bot*` covers `/bot<token>/...`);
   // without it a match must end at a path boundary, so `/webz` never opens up
@@ -100,6 +109,21 @@ function matches(candidate: string, expected: string): boolean {
   const b = Buffer.from(expected)
   if (a.length !== b.length) return false
   return timingSafeEqual(a, b)
+}
+
+/** Read the persisted signing secret, creating it on first use. */
+function loadSecret(path: string | undefined): Buffer {
+  if (!path) return randomBytes(32)
+  try {
+    const existing = readFileSync(path)
+    if (existing.length >= 32) return existing
+  } catch {
+    // Missing or too short: generate and persist a fresh one below.
+  }
+  const secret = randomBytes(32)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, secret, { mode: 0o600 })
+  return secret
 }
 
 function renderLogin(res: Response, status: number, error = ''): void {

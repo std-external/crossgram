@@ -1,6 +1,9 @@
 import { Context } from 'cordis'
 import Server from '@cordisjs/plugin-server'
 import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { apply, type Config } from './index.js'
 
 /** Stands in for the admin UI behind the gate. */
@@ -124,6 +127,58 @@ describe('plugin-webui-auth', () => {
       expect(await response.text()).toContain('<form method="POST" action="/__auth"')
     } finally {
       await site.stop()
+    }
+  })
+
+  it('keeps a login across a restart when the secret is persisted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'plugin-webui-auth-'))
+    const secretPath = join(dir, 'secret')
+    try {
+      const first = await launch({ secretPath })
+      const login = await fetch(`${first.url}/__auth`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'password=hunter2',
+        redirect: 'manual',
+      })
+      const cookie = login.headers.get('set-cookie')!.split(';')[0]
+      await first.stop()
+      running.pop()
+
+      // a fresh instance, as after a process restart
+      const second = await launch({ secretPath })
+      const authed = await fetch(`${second.url}/admin`, { headers: { cookie } })
+      expect(authed.status).toBe(200)
+      expect(await authed.text()).toBe('admin area')
+
+      const mode = (await stat(secretPath)).mode & 0o777
+      expect(mode).toBe(0o600)
+      expect((await readFile(secretPath)).length).toBeGreaterThanOrEqual(32)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('logs everyone out when the password changes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'plugin-webui-auth-'))
+    const secretPath = join(dir, 'secret')
+    try {
+      const first = await launch({ secretPath, password: 'hunter2' })
+      const login = await fetch(`${first.url}/__auth`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'password=hunter2',
+        redirect: 'manual',
+      })
+      const cookie = login.headers.get('set-cookie')!.split(';')[0]
+      await first.stop()
+      running.pop()
+
+      const second = await launch({ secretPath, password: 'rotated' })
+      const response = await fetch(`${second.url}/admin`, { headers: { cookie, accept: 'text/html' } })
+      expect(await response.text()).toContain('<form method="POST" action="/__auth"')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
     }
   })
 
