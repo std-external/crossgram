@@ -992,8 +992,9 @@ describe('bridge login e2e', () => {
     let client: TestClient | undefined
     try {
       const account = await waitForPlatformLogin(ctx, 'static')
+      // Rows migrated before the column existed carry the column default '{}'.
       await ctx.database.set('mtproto_auth_session', { id: account.auth.id }, {
-        passwordSrp: await bridge.generateSrpVerifier('e2e-password'),
+        passwordSrp: {},
       })
       client = await TestClient.connect(port)
       const key = await doClientHandshake(client, pubKey)
@@ -1003,7 +1004,18 @@ describe('bridge login e2e', () => {
         settings: { _: 'codeSettings' },
       }, 2)
 
-      const passwordInfo = await callRpc(client, key, session, { _: 'account.getPassword' }, 4)
+      const emptyInfo = await callRpc(client, key, session, { _: 'account.getPassword' }, 4)
+      expect(emptyInfo).toMatchObject({ _: 'account.password', hasPassword: false })
+      expect(await callRpc(client, key, session, {
+        _: 'auth.signIn', phoneNumber: account.auth.virtualPhone,
+        phoneCodeHash: `hash_${account.auth.id}`,
+        phoneCode: '000000',
+      }, 6)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'PHONE_CODE_INVALID' })
+
+      await ctx.database.set('mtproto_auth_session', { id: account.auth.id }, {
+        passwordSrp: await bridge.generateSrpVerifier('e2e-password'),
+      })
+      const passwordInfo = await callRpc(client, key, session, { _: 'account.getPassword' }, 8)
       expect(passwordInfo).toMatchObject({ _: 'account.password', hasPassword: true })
       expect(passwordInfo.currentAlgo).toMatchObject({
         _: 'passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow', g: 3,
@@ -1013,23 +1025,23 @@ describe('bridge login e2e', () => {
         _: 'auth.signIn', phoneNumber: account.auth.virtualPhone,
         phoneCodeHash: `hash_${account.auth.id}`,
         phoneCode: '000000',
-      }, 6)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
+      }, 10)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
       // Five-digit clients ask for 00000 instead; any all-zero code opts in.
       expect(await callRpc(client, key, session, {
         _: 'auth.signIn', phoneNumber: account.auth.virtualPhone,
         phoneCodeHash: `hash_${account.auth.id}`,
         phoneCode: '00000',
-      }, 8)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
+      }, 12)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
 
       const wrongCheck = await computeSrpParams(crypto, passwordInfo, 'wrong-password')
       expect(await callRpc(client, key, session, {
         _: 'auth.checkPassword', password: wrongCheck,
-      }, 10)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'PASSWORD_HASH_INVALID' })
+      }, 14)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'PASSWORD_HASH_INVALID' })
 
       const check = await computeSrpParams(crypto, passwordInfo, 'e2e-password')
       expect(await callRpc(client, key, session, {
         _: 'auth.checkPassword', password: check,
-      }, 12)).toMatchObject({ _: 'auth.authorization', user: { self: true } })
+      }, 16)).toMatchObject({ _: 'auth.authorization', user: { self: true } })
       expect(await ctx.database.get('mtproto_auth_binding', {
         authKeyId: Buffer.from(key.authKeyId).toString('hex'),
       })).toMatchObject([

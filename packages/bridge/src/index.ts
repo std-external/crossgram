@@ -33,7 +33,7 @@ import {
 } from './platform-account.js'
 import { verifyLoginCode } from './login-code.js'
 import {
-  SRP_PRIME_HEX, SrpChallengeStore, generateSrpVerifier, verifySrpChallenge,
+  SRP_PRIME_HEX, SrpChallengeStore, generateSrpVerifier, isValidSrpVerifier, verifySrpChallenge,
 } from './login-srp.js'
 import { DraftStore } from './draft-store.js'
 import { NotificationSettingsStore } from './notification-settings.js'
@@ -863,7 +863,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
     // An all-zero code (000000, or fewer zeros on clients that render a
     // five-digit input) opts into the second factor: the client is told a
     // password is required and continues with auth.checkPassword instead.
-    if (/^0+$/.test(phoneCode) && auth.passwordSrp) throw new RpcError(400, 'SESSION_PASSWORD_NEEDED')
+    if (/^0+$/.test(phoneCode) && isValidSrpVerifier(auth.passwordSrp)) throw new RpcError(400, 'SESSION_PASSWORD_NEEDED')
     if (!verifyLoginCode(auth.totpSecret, phoneCode)) throw new RpcError(400, 'PHONE_CODE_INVALID')
     return authorizePlatformSession(rpc, {
       platformId: auth.platformId,
@@ -881,7 +881,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
     // algorithms are reported as unknown to keep clients out of that flow.
     const newAlgo = { _: 'passwordKdfAlgoUnknown' } as const
     const newSecureAlgo = { _: 'securePasswordKdfAlgoUnknown' } as const
-    if (auth?.passwordSrp && authKeyId) {
+    if (auth && isValidSrpVerifier(auth.passwordSrp) && authKeyId) {
       const challenge = srpChallenges.begin(authKeyId, auth.passwordSrp)
       return {
         _: 'account.password',

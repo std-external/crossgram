@@ -3,7 +3,7 @@ import Long from 'long'
 import { computeSrpParams } from '@mtcute/core/utils.js'
 import { NodeCryptoProvider } from '@mtcute/node/utils.js'
 import {
-  SRP_PRIME_HEX, SrpChallengeStore, generateSrpVerifier, verifySrpChallenge,
+  SRP_PRIME_HEX, SrpChallengeStore, generateSrpVerifier, isValidSrpVerifier, verifySrpChallenge,
 } from './login-srp.js'
 
 const crypto = new NodeCryptoProvider()
@@ -35,6 +35,15 @@ async function clientCheck(
 }
 
 describe('two-step verification SRP', () => {
+  it('treats the migrated column default {} and partial rows as no password', async () => {
+    expect(isValidSrpVerifier({})).toBe(false)
+    expect(isValidSrpVerifier(null)).toBe(false)
+    expect(isValidSrpVerifier(undefined)).toBe(false)
+    expect(isValidSrpVerifier({ v: 'ab' })).toBe(false)
+    const verifier = await generateSrpVerifier('hunter2')
+    expect(isValidSrpVerifier(verifier)).toBe(true)
+  })
+
   it('round-trips a correct password against the mtcute client computation', async () => {
     const verifier = await generateSrpVerifier('hunter2')
     const store = new SrpChallengeStore()

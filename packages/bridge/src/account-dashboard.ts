@@ -1,5 +1,6 @@
 import type { ProvisionedPlatformAccount } from './platform-account.js'
 import { getLoginCodeState } from './login-code.js'
+import { isValidSrpVerifier } from './login-srp.js'
 
 import type { CrossGramServerConfig, PlatformAccountStatus, PlatformAccountView } from './dashboard-types.js'
 export type { CrossGramServerConfig, CrossGramServerConfigDc, PlatformAccountDashboardData, PlatformAccountStatus, PlatformAccountView } from './dashboard-types.js'
@@ -44,7 +45,7 @@ export function makePlatformAccountView(
     loginCode: code.code,
     validUntil: code.validUntil,
     remainingSeconds: code.remainingSeconds,
-    hasPassword: Boolean(account.auth.passwordSrp),
+    hasPassword: isValidSrpVerifier(account.auth.passwordSrp),
   }
 }
 

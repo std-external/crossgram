@@ -26,6 +26,19 @@ export interface SrpVerifier {
   salt2: string
 }
 
+/**
+ * Whether a stored `passwordSrp` value carries a usable verifier. Rows migrated
+ * before the column existed hold the column default `'{}'`, which is truthy —
+ * treat anything without all three hex fields as "no password configured".
+ */
+export function isValidSrpVerifier(value: unknown): value is SrpVerifier {
+  if (value === null || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+  return typeof candidate.v === 'string' && candidate.v.length > 0
+    && typeof candidate.salt1 === 'string' && candidate.salt1.length > 0
+    && typeof candidate.salt2 === 'string' && candidate.salt2.length > 0
+}
+
 function to256(value: bigint): Uint8Array {
   return bigint.toBytes(value, 256)
 }
