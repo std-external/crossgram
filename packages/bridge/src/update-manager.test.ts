@@ -7,7 +7,7 @@ import { __tlReaderMap, __tlWriterMap } from '@mtcute/core/utils.js'
 import { TlBinaryReader, TlBinaryWriter } from '@mtcute/tl-runtime'
 import Long from 'long'
 import type { ServerConnection } from '@mtproto-relay/mtproto'
-import { DialogRpc, stableId } from './dialogs.js'
+import { DialogRpc, peerTlSeed, stableId } from './dialogs.js'
 import { MessageStore } from './message-store.js'
 import { defineModels } from './models.js'
 import { PlatformRegistry } from './platform-manager.js'
@@ -25,6 +25,10 @@ const session: PlatformSession = {
   platformSessionId: 'updates-session', platformId: 'updates-platform', userId: 'self',
   credentials: {}, metadata: { firstName: 'Current', phone: 'qq-uin-must-not-project' },
   virtualPhone: '888123456789012',
+}
+
+function peerTlId(peerId: string): number {
+  return stableId(peerTlSeed(session.platformSessionId, peerId))
 }
 
 const platform: IMPlatform = {
@@ -303,8 +307,8 @@ describe('UpdateManager', () => {
       _: 'messages.getDialogs', offsetDate: 0, offsetId: 0,
       offsetPeer: { _: 'inputPeerEmpty' }, limit: 1, hash: Long.ZERO,
     }) as tl.messages.RawDialogsSlice
-    const upperChannelId = stableId(`peer:${upperConversation.id}`)
-    const lowerChannelId = stableId(`peer:${lowerConversation.id}`)
+    const upperChannelId = peerTlId(upperConversation.id)
+    const lowerChannelId = peerTlId(lowerConversation.id)
     expect(firstPage.dialogs).toMatchObject([{ peer: { _: 'peerChannel', channelId: upperChannelId } }])
 
     const secondPage = await rpc.getDialogs({
@@ -413,7 +417,7 @@ describe('UpdateManager', () => {
 
     const response = await rpc.getChannelMessages({
       _: 'channels.getMessages',
-      channel: { _: 'inputChannel', channelId: stableId(`peer:${conversation.id}`), accessHash: Long.ONE },
+      channel: { _: 'inputChannel', channelId: peerTlId(conversation.id), accessHash: Long.ONE },
       id: [{ _: 'inputMessageID', id: ingested.projection[0]!.tlMessageId }],
     }) as tl.messages.RawChannelMessages
 
@@ -958,10 +962,10 @@ describe('UpdateManager', () => {
     const forwarded = await rpc.forwardMessages({
       _: 'messages.forwardMessages',
       fromPeer: {
-        _: 'inputPeerChannel', channelId: stableId(`peer:${sourceConversation.id}`), accessHash: Long.ONE,
+        _: 'inputPeerChannel', channelId: peerTlId(sourceConversation.id), accessHash: Long.ONE,
       },
       toPeer: {
-        _: 'inputPeerChannel', channelId: stableId(`peer:${targetConversation.id}`), accessHash: Long.ONE,
+        _: 'inputPeerChannel', channelId: peerTlId(targetConversation.id), accessHash: Long.ONE,
       },
       id: [sourceProjection.projection[0].tlMessageId], randomId: [Long.fromNumber(701)],
     }, requester) as tl.RawUpdates
@@ -984,7 +988,7 @@ describe('UpdateManager', () => {
     await expect(manager.getChannelDifference(session.platformSessionId, {
       _: 'updates.getChannelDifference', force: true,
       channel: {
-        _: 'inputChannel', channelId: stableId(`peer:${targetConversation.id}`), accessHash: Long.ZERO,
+        _: 'inputChannel', channelId: peerTlId(targetConversation.id), accessHash: Long.ZERO,
       },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })).resolves.toMatchObject({
@@ -1019,14 +1023,14 @@ describe('UpdateManager', () => {
       { _: 'updateNewMessage', pts: 2 },
     ])
     expect(await manager.getState(session.platformSessionId)).toMatchObject({ pts: 2, seq: 4 })
-    expect(await store.getChannelUpdateState(session.platformSessionId, stableId('peer:alpha')))
+    expect(await store.getChannelUpdateState(session.platformSessionId, peerTlId('alpha')))
       .toMatchObject({ pts: 3 })
-    expect(await store.getChannelUpdateState(session.platformSessionId, stableId('peer:beta')))
+    expect(await store.getChannelUpdateState(session.platformSessionId, peerTlId('beta')))
       .toMatchObject({ pts: 2 })
 
     const alphaDifference = await manager.getChannelDifference(session.platformSessionId, {
       _: 'updates.getChannelDifference', force: true,
-      channel: { _: 'inputChannel', channelId: stableId('peer:alpha'), accessHash: Long.ZERO },
+      channel: { _: 'inputChannel', channelId: peerTlId('alpha'), accessHash: Long.ZERO },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })
     expect(alphaDifference).toMatchObject({
@@ -1047,8 +1051,8 @@ describe('UpdateManager', () => {
         { message: 'alpha-2' },
       ],
       otherUpdates: [
-        { _: 'updateChannelTooLong', channelId: stableId('peer:alpha'), pts: 3 },
-        { _: 'updateChannelTooLong', channelId: stableId('peer:beta'), pts: 2 },
+        { _: 'updateChannelTooLong', channelId: peerTlId('alpha'), pts: 3 },
+        { _: 'updateChannelTooLong', channelId: peerTlId('beta'), pts: 2 },
       ],
       state: { pts: 2, seq: 4 },
     })
@@ -1083,8 +1087,8 @@ describe('UpdateManager', () => {
         { message: 'offline-beta-message' },
       ],
       otherUpdates: [
-        { _: 'updateChannelTooLong', channelId: stableId('peer:offline-alpha'), pts: 2 },
-        { _: 'updateChannelTooLong', channelId: stableId('peer:offline-beta'), pts: 2 },
+        { _: 'updateChannelTooLong', channelId: peerTlId('offline-alpha'), pts: 2 },
+        { _: 'updateChannelTooLong', channelId: peerTlId('offline-beta'), pts: 2 },
       ],
       chats: [
         { _: 'channel', title: 'Offline Alpha' },
@@ -1102,7 +1106,7 @@ describe('UpdateManager', () => {
     }
     const created = await store.ingest(session, conversation, first)
     await manager.publish(session, { event: { type: 'message', conversation, message: first }, result: created })
-    const channelId = stableId(`peer:${conversation.id}`)
+    const channelId = peerTlId(conversation.id)
     expect(await store.getChannelUpdateState(session.platformSessionId, channelId)).toMatchObject({ pts: 2 })
 
     const target = {
@@ -1248,7 +1252,7 @@ describe('UpdateManager', () => {
       _: 'updateReadHistoryInbox', peer: { _: 'peerUser' },
       maxId: directResult.tlMessageId, stillUnreadCount: 0, pts: 2, ptsCount: 1,
     }, {
-      _: 'updateReadChannelInbox', channelId: stableId('peer:group-read'),
+      _: 'updateReadChannelInbox', channelId: peerTlId('group-read'),
       maxId: groupResult.tlMessageId, stillUnreadCount: 0, pts: 2,
     }])
     for (const item of sent) expect(() => roundTrip(item.update)).not.toThrow()
@@ -1348,7 +1352,7 @@ describe('UpdateManager', () => {
   it('does not consume channel pts for mention acknowledgements', async () => {
     const { store, manager, sent } = await createHarness()
     const conversation: IMConversation = { id: 'mention-channel', kind: 'group', title: 'Mention Channel' }
-    const channelId = stableId(`peer:${conversation.id}`)
+    const channelId = peerTlId(conversation.id)
 
     await expect(manager.publishMentionRead(
       session, conversation, [44], undefined,
@@ -1722,7 +1726,7 @@ describe('UpdateManager', () => {
     expect(dialogs.dialogs[0]).toMatchObject({ unreadCount: 3, unreadMentionsCount: 2 })
     const peer = {
       _: 'inputPeerChannel' as const,
-      channelId: stableId(`peer:${conversation.id}`), accessHash: Long.ONE,
+      channelId: peerTlId(conversation.id), accessHash: Long.ONE,
     }
     const request: tl.messages.RawGetUnreadMentionsRequest = {
       _: 'messages.getUnreadMentions', peer,
@@ -1777,15 +1781,15 @@ describe('UpdateManager', () => {
     expect(sent[0].update).toMatchObject({
       updates: [{
         _: 'updateNewChannelMessage',
-        message: { id: rootId, peerId: { _: 'peerChannel', channelId: stableId('peer:general') } },
+        message: { id: rootId, peerId: { _: 'peerChannel', channelId: peerTlId('general') } },
       }],
-      chats: [{ _: 'channel', id: stableId('peer:general'), title: 'General', forum: true }],
+      chats: [{ _: 'channel', id: peerTlId('general'), title: 'General', forum: true }],
     })
     expect(sent[1].update).toMatchObject({
       updates: [{
         _: 'updateNewChannelMessage',
         message: {
-          peerId: { _: 'peerChannel', channelId: stableId('peer:general') },
+          peerId: { _: 'peerChannel', channelId: peerTlId('general') },
           replyTo: { _: 'messageReplyHeader', forumTopic: true, replyToTopId: rootId },
         },
       }],
@@ -1978,7 +1982,7 @@ describe('UpdateManager', () => {
     manager.requestRecovery({ connection: { closed: false } as ServerConnection, sendUpdate: update => sent.push(update) })
     expect(sent).toEqual([{ _: 'updatesTooLong' }])
     await expect(manager.getChannelDifference(session.platformSessionId, {
-      _: 'updates.getChannelDifference', channel: { _: 'inputChannel', channelId: stableId('peer:offline'), accessHash: Long.ZERO },
+      _: 'updates.getChannelDifference', channel: { _: 'inputChannel', channelId: peerTlId('offline'), accessHash: Long.ZERO },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })).resolves.toMatchObject({
       _: 'updates.channelDifference', final: true, pts: 2,
@@ -2111,7 +2115,7 @@ describe('UpdateManager', () => {
   it('skips a channel reservation whose publisher hung', async () => {
     const { store, manager, updateStore } = await createHarness()
     const conversation: IMConversation = { id: 'abandoned-channel', kind: 'group', title: 'Abandoned channel' }
-    const channelId = stableId(`peer:${conversation.id}`)
+    const channelId = peerTlId(conversation.id)
     const message: IMMessage = {
       id: 'abandoned-channel-message', conversationId: conversation.id, senderId: 'alice', timestamp: 52,
       content: { parts: [{ type: 'text', text: 'channel payload follows' }] },
@@ -2147,7 +2151,7 @@ describe('UpdateManager', () => {
       () => 0,
     )
     const conversation: IMConversation = { id: 'pending-channel', kind: 'group', title: 'Pending Channel' }
-    const channelId = stableId(`peer:${conversation.id}`)
+    const channelId = peerTlId(conversation.id)
     const request = {
       _: 'updates.getChannelDifference' as const, force: true,
       channel: { _: 'inputChannel' as const, channelId, accessHash: Long.ZERO },
@@ -2208,7 +2212,7 @@ describe('UpdateManager', () => {
 
     const difference = await manager.getChannelDifference(session.platformSessionId, {
       _: 'updates.getChannelDifference', force: true,
-      channel: { _: 'inputChannel', channelId: stableId('peer:final-sequence'), accessHash: Long.ZERO },
+      channel: { _: 'inputChannel', channelId: peerTlId('final-sequence'), accessHash: Long.ZERO },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })
     expect(difference).toMatchObject({
@@ -2237,7 +2241,7 @@ describe('UpdateManager', () => {
     })
     const difference = await manager.getChannelDifference(session.platformSessionId, {
       _: 'updates.getChannelDifference', force: true,
-      channel: { _: 'inputChannel', channelId: stableId('peer:service-group'), accessHash: Long.ZERO },
+      channel: { _: 'inputChannel', channelId: peerTlId('service-group'), accessHash: Long.ZERO },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })
     expect(difference).toMatchObject({
@@ -2281,7 +2285,7 @@ describe('UpdateManager', () => {
 
     const difference = await manager.getChannelDifference(session.platformSessionId, {
       _: 'updates.getChannelDifference', force: true,
-      channel: { _: 'inputChannel', channelId: stableId('peer:join-group'), accessHash: Long.ZERO },
+      channel: { _: 'inputChannel', channelId: peerTlId('join-group'), accessHash: Long.ZERO },
       filter: { _: 'channelMessagesFilterEmpty' }, pts: 1, limit: 100,
     })
     expect(difference).toMatchObject({

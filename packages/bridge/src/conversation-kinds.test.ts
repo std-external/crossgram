@@ -7,7 +7,7 @@ import { __tlReaderMap, __tlWriterMap } from '@mtcute/core/utils.js'
 import { TlBinaryReader, TlBinaryWriter } from '@mtcute/tl-runtime'
 import Long from 'long'
 import type { ServerConnection } from '@mtproto-relay/mtproto'
-import { CANCELLED_MESSAGE_ID, DialogRpc, stableId } from './dialogs.js'
+import { CANCELLED_MESSAGE_ID, DialogRpc, peerTlSeed, stableId } from './dialogs.js'
 import { MessageStore } from './message-store.js'
 import { defineModels } from './models.js'
 import { ReactionRpc } from './reaction-rpc.js'
@@ -16,6 +16,10 @@ import type { IMConversation, IMEvent, IMMessage, IMMessageTarget, IMPlatform, I
 
 const session: PlatformSession = {
   platformSessionId: 'kinds-session', platformId: 'kinds', userId: 'self', credentials: {}, metadata: {},
+}
+
+function peerTlId(peerId: string): number {
+  return stableId(peerTlSeed(session.platformSessionId, peerId))
 }
 
 const ownerPermissions = {
@@ -199,7 +203,7 @@ async function createRpc(
             _: 'updates' as const,
             updates: [{
               _: 'updateDeleteChannelMessages' as const,
-              channelId: stableId(`peer:${event.conversation.id}`),
+              channelId: peerTlId(event.conversation.id),
               messages: result.tlMessageIds, pts: 11, ptsCount: result.tlMessageIds.length,
             }],
             users: [], chats: [], date: event.timestamp, seq: 1,
@@ -247,7 +251,7 @@ describe('conversation kinds', () => {
       const { rpc } = await createRpc()
       const channel = {
         _: 'inputChannel' as const,
-        channelId: stableId('peer:group'),
+        channelId: peerTlId('group'),
         accessHash: Long.ZERO,
       }
 
@@ -264,7 +268,7 @@ describe('conversation kinds', () => {
     const { ctx, rpc } = await createRpc()
     const channel = {
       _: 'inputChannel' as const,
-      channelId: stableId('peer:group'),
+      channelId: peerTlId('group'),
       accessHash: Long.ZERO,
     }
     const history = await rpc.getHistory(historyRequest({
@@ -311,7 +315,7 @@ describe('conversation kinds', () => {
     await rpc.getDialogs(dialogsRequest())
     const conversation = conversations.find((item) => item.id === 'group')!
     const channel = {
-      _: 'inputChannel' as const, channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputChannel' as const, channelId: peerTlId('group'), accessHash: Long.ZERO,
     }
     const content: IMMessage = {
       id: 'shared-sequence-content', conversationId: conversation.id, senderId: 'alice', timestamp: 1,
@@ -351,7 +355,7 @@ describe('conversation kinds', () => {
     await rpc.getDialogs(dialogsRequest())
     const conversation = conversations.find((item) => item.id === 'group')!
     const channel = {
-      _: 'inputChannel' as const, channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputChannel' as const, channelId: peerTlId('group'), accessHash: Long.ZERO,
     }
     const notice: IMMessage = {
       id: 'publisherless-poke', conversationId: conversation.id, senderId: 'alice', timestamp: 1,
@@ -396,7 +400,7 @@ describe('conversation kinds', () => {
     await rpc.getDialogs(dialogsRequest())
 
     const history = await rpc.getHistory(historyRequest({
-      _: 'inputPeerChannel', channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputPeerChannel', channelId: peerTlId('group'), accessHash: Long.ZERO,
     })) as tl.messages.RawMessages
     const rendered = history.messages.find((message) => message._ === 'message'
       && (message as tl.RawMessage).message === 'sidecar reply') as tl.RawMessage
@@ -1004,7 +1008,7 @@ describe('conversation kinds', () => {
     }
     const { rpc } = await createRpc(nativeIdsPlatform)
     const result = await rpc.getHistory(historyRequest({
-      _: 'inputPeerChannel', channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputPeerChannel', channelId: peerTlId('group'), accessHash: Long.ZERO,
     })) as tl.messages.RawMessages
 
     expect(result.messages).toMatchObject([
@@ -1038,7 +1042,7 @@ describe('conversation kinds', () => {
     }
     const { rpc, store } = await createRpc(exactPlatform)
     const result = await rpc.getHistory(historyRequest({
-      _: 'inputPeerChannel', channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputPeerChannel', channelId: peerTlId('group'), accessHash: Long.ZERO,
     })) as tl.messages.RawMessages
     const exactProjected = await store.findProjectedByPlatformId(
       session.platformSessionId, group.id, exactTarget.id,
@@ -1059,8 +1063,8 @@ describe('conversation kinds', () => {
   it('accepts channel input peers for groups, returns sender users, and sends to the original target IDs', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
-    const channelId = stableId('peer:parent-channel')
+    const groupId = peerTlId('group')
+    const channelId = peerTlId('parent-channel')
     const group = await rpc.getHistory(historyRequest({
       _: 'inputPeerChannel', channelId: groupId, accessHash: Long.ZERO,
     })) as tl.messages.RawMessages
@@ -1116,7 +1120,7 @@ describe('conversation kinds', () => {
   it('resolves Telegram reply IDs back to opaque platform message IDs', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const history = await rpc.getHistory(historyRequest(groupPeer)) as tl.messages.RawMessages
     const replied = history.messages[0] as tl.RawMessage
@@ -1162,7 +1166,7 @@ describe('conversation kinds', () => {
       outgoing: true, timestamp: 1_700_000_000,
       content: { parts: [{ type: 'text', text: 'late push' }] },
     })
-    const channelId = stableId(`peer:${lateConversation.id}`)
+    const channelId = peerTlId(lateConversation.id)
 
     await expect(rpc.getPeerSettings({
       _: 'messages.getPeerSettings',
@@ -1173,7 +1177,7 @@ describe('conversation kinds', () => {
   it('projects edit, forward, and administrator deletion through platform actions', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const directId = await rpc.userTlId('direct')
     const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const directPeer = { _: 'inputPeerUser' as const, userId: directId, accessHash: Long.ZERO }
@@ -1309,7 +1313,7 @@ describe('conversation kinds', () => {
         editPlatform, { publishLocalEvents: true },
       )
       await rpc.getDialogs(dialogsRequest())
-      const groupId = stableId('peer:group')
+      const groupId = peerTlId('group')
       const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
       const history = await rpc.getHistory(historyRequest(groupPeer)) as tl.messages.RawMessages
       const replyTargetId = (history.messages[0] as tl.RawMessage).id
@@ -1397,7 +1401,7 @@ describe('conversation kinds', () => {
       platform, { publishLocalEvents: true },
     )
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const requester = {} as ServerConnection
 
     const result = await rpc.sendMessage({
@@ -1461,7 +1465,7 @@ describe('conversation kinds', () => {
     try {
       const { rpc } = await createRpc()
       await rpc.getDialogs(dialogsRequest())
-      const groupId = stableId('peer:group')
+      const groupId = peerTlId('group')
       const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
       const groupChannel = { _: 'inputChannel' as const, channelId: groupId, accessHash: Long.ZERO }
       const history = await rpc.getHistory(historyRequest(groupPeer)) as tl.messages.RawMessages
@@ -1526,7 +1530,7 @@ describe('conversation kinds', () => {
     }
     const { rpc } = await createRpc(limitedPlatform)
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const groupChannel = { _: 'inputChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const history = await rpc.getHistory(historyRequest({
       _: 'inputPeerChannel', channelId: groupId, accessHash: Long.ZERO,
@@ -1560,8 +1564,8 @@ describe('conversation kinds', () => {
   it('serves the peer metadata RPCs required by desktop group and channel views', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
-    const channelId = stableId('peer:parent-channel')
+    const groupId = peerTlId('group')
+    const channelId = peerTlId('parent-channel')
     const group = { _: 'inputChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const channel = { _: 'inputChannel' as const, channelId, accessHash: Long.ZERO }
 
@@ -1647,7 +1651,7 @@ describe('conversation kinds', () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
     const channel = {
-      _: 'inputChannel' as const, channelId: stableId('peer:group'), accessHash: Long.ZERO,
+      _: 'inputChannel' as const, channelId: peerTlId('group'), accessHash: Long.ZERO,
     }
     const participants = await rpc.getChannelParticipants({
       _: 'channels.getParticipants', channel, filter: { _: 'channelParticipantsRecent' },
@@ -1697,7 +1701,7 @@ describe('conversation kinds', () => {
     }
     const { rpc } = await createRpc(moderationPlatform)
     await rpc.getDialogs(dialogsRequest())
-    const channel = { _: 'inputChannel' as const, channelId: stableId('peer:group'), accessHash: Long.ZERO }
+    const channel = { _: 'inputChannel' as const, channelId: peerTlId('group'), accessHash: Long.ZERO }
     await rpc.getChannelParticipants({
       _: 'channels.getParticipants', channel,
       filter: { _: 'channelParticipantsRecent' }, offset: 0, limit: 100, hash: Long.ZERO,
@@ -1723,8 +1727,8 @@ describe('conversation kinds', () => {
   it('serves channel-scoped message, chat-list, and read RPCs', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())
-    const groupId = stableId('peer:group')
-    const channelId = stableId('peer:parent-channel')
+    const groupId = peerTlId('group')
+    const channelId = peerTlId('parent-channel')
     const group = { _: 'inputChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const channel = { _: 'inputChannel' as const, channelId, accessHash: Long.ZERO }
     const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
@@ -1795,7 +1799,7 @@ describe('conversation kinds', () => {
     const directPeer = {
       _: 'inputPeerUser' as const, userId: await rpc.userTlId('direct'), accessHash: Long.ZERO,
     }
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const groupPeer = { _: 'inputPeerChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     const directHistory = await rpc.getHistory(historyRequest(directPeer)) as tl.messages.RawMessages
     const groupHistory = await rpc.getHistory(historyRequest(groupPeer)) as tl.messages.RawMessages
@@ -1844,7 +1848,7 @@ describe('conversation kinds', () => {
     }
     const { rpc } = await createRpc(paginatedPlatform)
     const dialogs = await rpc.getDialogs(dialogsRequest()) as tl.messages.RawDialogs
-    const groupId = stableId('peer:group')
+    const groupId = peerTlId('group')
     const group = { _: 'inputChannel' as const, channelId: groupId, accessHash: Long.ZERO }
     expect(dialogs.dialogs.find((dialog) =>
       ((dialog as tl.RawDialog).peer as tl.RawPeerChannel).channelId === groupId)).toBeDefined()
@@ -1924,7 +1928,7 @@ describe('conversation kinds', () => {
     await rpc.getDialogs(dialogsRequest())
     const group = {
       _: 'inputChannel' as const,
-      channelId: stableId('peer:group'),
+      channelId: peerTlId('group'),
       accessHash: Long.ZERO,
     }
 

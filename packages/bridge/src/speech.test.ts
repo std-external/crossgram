@@ -6,7 +6,11 @@ import {
   type SpeechSynthesisInput,
   type SpeechTranscriptionInput,
 } from './speech.js'
-import { DialogRpc, stableId } from './dialogs.js'
+import { DialogRpc, peerTlSeed, stableId } from './dialogs.js'
+
+function peerTlId(peerId: string): number {
+  return stableId(peerTlSeed('s', peerId))
+}
 
 describe('SpeechPipeline', () => {
   it('allows a provider to handle transcription through the Cordis waterfall', async () => {
@@ -68,7 +72,7 @@ describe('SpeechPipeline', () => {
 
     await expect(rpc.transcribeAudio({
       _: 'messages.transcribeAudio',
-      peer: { _: 'inputPeerChannel', channelId: stableId('peer:group'), accessHash: Long.ONE },
+      peer: { _: 'inputPeerChannel', channelId: peerTlId('group'), accessHash: Long.ONE },
       msgId: 42,
     }, speech)).resolves.toMatchObject({
       _: 'messages.transcribedAudio', pending: false, text: '转写成功',
