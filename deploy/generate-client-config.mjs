@@ -17,7 +17,9 @@ const candidate = keySource.trimStart().startsWith('{')
   ? JSON.parse(keySource).publicKeyPem
   : keySource
 if (typeof candidate !== 'string') throw new Error(`${keyPath} does not contain publicKeyPem`)
-const rsaKey = createPublicKey(candidate).export({ type: 'pkcs1', format: 'pem' }).toString().trim()
+const rsaKey = candidate.startsWith('-----BEGIN RSA PUBLIC KEY-----')
+  ? candidate.trim()
+  : createPublicKey(candidate).export({ type: 'pkcs1', format: 'pem' }).toString().trim()
 
 const config = {
   name,
