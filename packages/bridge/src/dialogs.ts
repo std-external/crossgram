@@ -1739,8 +1739,7 @@ export class DialogRpc {
     if (!actor || (actor.role !== 'owner' && actor.permissions.manageMembers !== true)) {
       throw new RpcError(400, 'CHAT_ADMIN_REQUIRED')
     }
-    const targetId = req.participant._ === 'inputPeerUser'
-      || req.participant._ === 'inputUser' || req.participant._ === 'inputUserFromMessage'
+    const targetId = req.participant._ === 'inputPeerUser' || req.participant._ === 'inputPeerUserFromMessage'
       ? this._tlToUser.get(req.participant.userId)
       : undefined
     if (!targetId || targetId === this._session.userId) throw new RpcError(400, 'USER_ID_INVALID')
