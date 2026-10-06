@@ -667,9 +667,8 @@ describe('SatoriExporter', () => {
 
   it('streams HTTPS media and reopens the URL for each consumption', async () => {
     const { ctx, platform } = await createExporter()
-    const get = vi.spyOn(ctx.http, 'get').mockResolvedValue(
-      Readable.from([Buffer.from([4, 5]), Buffer.from([6])]) as never,
-    )
+    const get = vi.spyOn(ctx.http, 'get').mockImplementation(async () =>
+      Readable.from([Buffer.from([4, 5]), Buffer.from([6])]) as never)
 
     await ctx.bots[0]!.createMessage('group:42', [h.img('https://outside.test/asset', { width: 2, height: 3 })])
     const source = (platform.sendMessage.mock.calls[0]![2].parts[0] as Extract<IMMessageInput['parts'][number], { type: 'media' }>).media.source!

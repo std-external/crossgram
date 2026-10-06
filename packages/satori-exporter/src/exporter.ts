@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { Bot, h, type Universal } from '@satorijs/core'
 import type { Context } from 'cordis'
 import {
@@ -629,8 +630,11 @@ function mediaSource(ctx: Context, src: string, size: number | undefined, maxByt
       } catch {
         throw new Error('unsupported media source')
       }
-      if (url.protocol !== 'https:') throw new Error('unsupported media source')
-      const stream = await ctx.http.get(url, { responseType: 'stream', signal: options?.signal })
+      // ponytail: IP-literal hosts are always refused (SSRF/NAT64 loopback bypass); relax to a blocklist if direct-IP media beds ever matter
+      if (url.protocol !== 'https:' || isIP(url.hostname.replace(/^\[|\]$/gu, ''))) {
+        throw new Error('unsupported media source')
+      }
+      const stream = await ctx.http.get(src, { responseType: 'stream', signal: options?.signal })
       let transferredBytes = 0
       for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
         const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
