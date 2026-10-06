@@ -44,6 +44,7 @@ export function makePlatformAccountView(
     loginCode: code.code,
     validUntil: code.validUntil,
     remainingSeconds: code.remainingSeconds,
+    hasPassword: Boolean(account.auth.passwordSrp),
   }
 }
 

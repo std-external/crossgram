@@ -15,6 +15,8 @@ export interface PlatformAccountView {
   loginCode?: string
   validUntil?: number
   remainingSeconds?: number
+  /** Whether an optional two-step verification password is configured. */
+  hasPassword?: boolean
   error?: string
 }
 
@@ -39,6 +41,8 @@ export interface PlatformAccountDashboardData {
   loginTokenApprovalUrl: string
   updatedAt: number
   refresh(): Promise<void>
+  /** Set, replace, or clear (null/empty) the two-step verification password. */
+  setLoginPassword(platformId: string, password: string | null): Promise<void>
 }
 
 export interface StickerDashboardAccount {

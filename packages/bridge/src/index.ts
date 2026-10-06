@@ -2,6 +2,7 @@
 import type { Context } from 'cordis'
 import type { tl } from '@mtcute/core'
 import { resolve } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import Long from 'long'
 import z from 'schemastery'
 import enUS from './locales/en-US.yml'
@@ -31,6 +32,9 @@ import {
   migrateLegacyVirtualPhones, PlatformAccountProvisioner, type ProvisionedPlatformAccount,
 } from './platform-account.js'
 import { verifyLoginCode } from './login-code.js'
+import {
+  SRP_PRIME_HEX, SrpChallengeStore, generateSrpVerifier, verifySrpChallenge,
+} from './login-srp.js'
 import { DraftStore } from './draft-store.js'
 import { NotificationSettingsStore } from './notification-settings.js'
 import {
@@ -82,6 +86,7 @@ export * from './sticker-rpc.js'
 export * from './reaction-rpc.js'
 export * from './resource-provider.js'
 export * from './login-code.js'
+export * from './login-srp.js'
 export * from './draft-store.js'
 export * from './platform-account.js'
 export * from './account-dashboard.js'
@@ -554,6 +559,15 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       await setStickerPackAssignment(ctx.database, platformSessionId, providerId, packId, assigned)
       await publishStickerPacks()
     },
+    async setLoginPassword(platformId, password) {
+      const [auth] = await ctx.database.get('mtproto_auth_session', { platformId })
+      if (!auth) throw new Error('目标账号不存在，请刷新后重试。')
+      if (password !== null && password.trim().length < 1) throw new Error('密码不能为空。')
+      await ctx.database.set('mtproto_auth_session', { id: auth.id }, {
+        passwordSrp: password === null ? null : await generateSrpVerifier(password),
+      })
+      await dashboard.refresh()
+    },
   }
   const dashboardEntry = ctx.webui.addEntry({
     baseUrl: import.meta.url,
@@ -814,10 +828,26 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
   } as unknown as tl.TlObject))
 
   // ── Auth ──
-  rpc.register('auth.sendCode', async (_rpc, req) => {
+  // Tracks which auth key last requested a login code, so the follow-up
+  // account.getPassword / auth.checkPassword calls during 2FA know the account.
+  const pendingCodeLogins = new Map<string, { authId: string, expiresAt: number }>()
+  const rememberCodeLogin = (authKeyId: Uint8Array | null, authId: string): void => {
+    if (!authKeyId) return
+    const now = Date.now()
+    for (const [key, entry] of pendingCodeLogins) {
+      if (entry.expiresAt <= now) pendingCodeLogins.delete(key)
+    }
+    pendingCodeLogins.set(authKeyHex(authKeyId), { authId, expiresAt: now + 10 * 60_000 })
+  }
+  const codeLoginAuthId = (authKeyId: Uint8Array | null): string | undefined =>
+    authKeyId === null ? undefined : pendingCodeLogins.get(authKeyHex(authKeyId))?.authId
+  const srpChallenges = new SrpChallengeStore()
+
+  rpc.register('auth.sendCode', async (rpc, req) => {
     const phone = normPhone((req as unknown as { phoneNumber: string }).phoneNumber)
     const [auth] = await ctx.database.get('mtproto_auth_session', { virtualPhone: phone })
     if (!auth) throw new RpcError(400, 'PHONE_NUMBER_UNOCCUPIED')
+    rememberCodeLogin(rpc.authKeyId, auth.id)
     return {
       _: 'auth.sentCode',
       flags: 0,
@@ -830,7 +860,75 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
     const { phoneNumber, phoneCode } = req as unknown as { phoneNumber: string, phoneCode: string }
     const [auth] = await ctx.database.get('mtproto_auth_session', { virtualPhone: normPhone(phoneNumber) })
     if (!auth) throw new RpcError(400, 'PHONE_NUMBER_UNOCCUPIED')
+    // An all-zero code (000000, or fewer zeros on clients that render a
+    // five-digit input) opts into the second factor: the client is told a
+    // password is required and continues with auth.checkPassword instead.
+    if (/^0+$/.test(phoneCode) && auth.passwordSrp) throw new RpcError(400, 'SESSION_PASSWORD_NEEDED')
     if (!verifyLoginCode(auth.totpSecret, phoneCode)) throw new RpcError(400, 'PHONE_CODE_INVALID')
+    return authorizePlatformSession(rpc, {
+      platformId: auth.platformId,
+      platformSessionId: auth.platformSessionId,
+    })
+  })
+
+  rpc.register('account.getPassword', async (rpc) => {
+    const authKeyId = rpc.authKeyId ? authKeyHex(rpc.authKeyId) : undefined
+    const authId = codeLoginAuthId(rpc.authKeyId)
+    const [auth] = authId
+      ? await ctx.database.get('mtproto_auth_session', { id: authId })
+      : []
+    // Passwords are managed from the dashboard, so the "set new password"
+    // algorithms are reported as unknown to keep clients out of that flow.
+    const newAlgo = { _: 'passwordKdfAlgoUnknown' } as const
+    const newSecureAlgo = { _: 'securePasswordKdfAlgoUnknown' } as const
+    if (auth?.passwordSrp && authKeyId) {
+      const challenge = srpChallenges.begin(authKeyId, auth.passwordSrp)
+      return {
+        _: 'account.password',
+        flags: 4,
+        hasRecovery: false,
+        hasSecureValues: false,
+        hasPassword: true,
+        currentAlgo: {
+          _: 'passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow',
+          salt1: Buffer.from(auth.passwordSrp.salt1, 'hex'),
+          salt2: Buffer.from(auth.passwordSrp.salt2, 'hex'),
+          g: 3,
+          p: Buffer.from(SRP_PRIME_HEX, 'hex'),
+        },
+        srpB: Buffer.from(challenge.B.toString(16).padStart(512, '0'), 'hex'),
+        srpId: challenge.srpId,
+        newAlgo,
+        newSecureAlgo,
+        secureRandom: randomBytes(32),
+      } as unknown as tl.TlObject
+    }
+    return {
+      _: 'account.password',
+      flags: 0,
+      hasRecovery: false,
+      hasSecureValues: false,
+      hasPassword: false,
+      newAlgo,
+      newSecureAlgo,
+      secureRandom: randomBytes(32),
+    } as unknown as tl.TlObject
+  })
+
+  rpc.register('auth.checkPassword', async (rpc, req) => {
+    const authKeyId = rpc.authKeyId ? authKeyHex(rpc.authKeyId) : undefined
+    const challenge = authKeyId ? srpChallenges.get(authKeyId) : undefined
+    const input = (req as unknown as { password?: { _?: string } }).password
+    if (!challenge || !authKeyId || input?._ !== 'inputCheckPasswordSRP') {
+      throw new RpcError(400, 'PASSWORD_HASH_INVALID')
+    }
+    const check = input as unknown as { srpId: Long, A: Uint8Array, M1: Uint8Array }
+    if (!verifySrpChallenge(challenge, check)) throw new RpcError(400, 'PASSWORD_HASH_INVALID')
+    srpChallenges.delete(authKeyId)
+    const [auth] = await ctx.database.get('mtproto_auth_session', {
+      id: codeLoginAuthId(rpc.authKeyId) ?? '',
+    })
+    if (!auth) throw new RpcError(400, 'PASSWORD_HASH_INVALID')
     return authorizePlatformSession(rpc, {
       platformId: auth.platformId,
       platformSessionId: auth.platformSessionId,

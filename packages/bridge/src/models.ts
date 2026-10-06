@@ -2,6 +2,7 @@ import type { Context } from 'cordis'
 import type {
   IMConversationKind, IMMediaKind, JsonObject, JsonValue,
 } from './platform.js'
+import type { SrpVerifier } from './login-srp.js'
 
 export interface AuthSessionRow {
   id: string
@@ -9,6 +10,8 @@ export interface AuthSessionRow {
   totpSecret: string
   platformId: string
   platformSessionId: string
+  /** SRP verifier for the optional two-step verification password. */
+  passwordSrp?: SrpVerifier | null
 }
 
 export interface PlatformSessionRow {
@@ -319,7 +322,7 @@ declare module '@cordisjs/plugin-database' {
 export function defineModels(ctx: Context): void {
   ctx.model.extend('mtproto_auth_session', {
     id: 'string', virtualPhone: 'string', totpSecret: 'string', platformId: 'string',
-    platformSessionId: 'string',
+    platformSessionId: 'string', passwordSrp: 'json',
   }, { primary: 'id', unique: ['virtualPhone', 'platformId'] })
 
   ctx.model.extend('mtproto_platform_session', {

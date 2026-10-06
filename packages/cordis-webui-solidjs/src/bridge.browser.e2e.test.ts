@@ -138,6 +138,7 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
         },
         async refreshBots() {},
         async refreshStickerPacks() {},
+        async setLoginPassword() {},
         async setStickerPackAssigned(account, provider, pack, assigned) {
           assignments.push([account, provider, pack, assigned])
           entry.mutate((value) => {

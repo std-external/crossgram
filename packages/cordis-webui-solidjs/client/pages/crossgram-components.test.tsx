@@ -31,7 +31,7 @@ describe('bounded Crossgram components', () => {
         validUntil: 3000,
       })
     const root = mount(() => (
-      <AccountCard account={account()} now={now()} connected />
+      <AccountCard account={account()} now={now()} connected setPassword={async () => {}} />
     ))
     const card = root.querySelector('article')!,
       copy = root.querySelector(

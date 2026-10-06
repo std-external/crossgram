@@ -21,12 +21,6 @@ export const androidRpcHandlers: Readonly<Record<string, AndroidRpcHandler>> = {
   'account.getGlobalPrivacySettings': () => ({
     _: 'globalPrivacySettings',
   } as unknown as tl.TlObject),
-  'account.getPassword': () => ({
-    _: 'account.password',
-    newAlgo: { _: 'passwordKdfAlgoUnknown' },
-    newSecureAlgo: { _: 'securePasswordKdfAlgoUnknown' },
-    secureRandom: new Uint8Array(),
-  } as unknown as tl.TlObject),
   'account.getPrivacy': () => ({
     _: 'account.privacyRules', rules: [{ _: 'privacyValueAllowAll' }], chats: [], users: [],
   } as unknown as tl.TlObject),

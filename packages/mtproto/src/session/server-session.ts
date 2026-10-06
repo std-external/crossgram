@@ -271,6 +271,7 @@ const MAX_COMPLETED_MESSAGE_IDS = 4096
 const AUTHORIZATION_TRANSITION_METHODS = new Set([
   'auth.bindTempAuthKey',
   'auth.signIn',
+  'auth.checkPassword',
   'auth.importAuthorization',
   'auth.logOut',
   'auth.exportLoginToken',

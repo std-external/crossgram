@@ -142,6 +142,7 @@ export default function AccountsPage(props: PageProps) {
                 account={accounts().get(id)!}
                 now={now()}
                 connected={rpc.ready}
+                setPassword={(password) => rpc.data.setLoginPassword(id, password)}
               />
             )}
           </For>
@@ -182,9 +183,11 @@ export function AccountCard(props: {
   account: PlatformAccountView
   now: number
   connected: boolean
+  setPassword: (password: string | null) => Promise<void>
 }) {
   const [failedAvatar, setFailedAvatar] = createSignal(false),
     [copied, setCopied] = createSignal(''),
+    [passwordOpen, setPasswordOpen] = createSignal(false),
     action = useAction()
   const avatar = createMemo(() => safeImageURL(props.account.avatarUrl))
   createEffect(() => {
@@ -316,9 +319,108 @@ export function AccountCard(props: {
               : 'Enter this phone number and code in your Telegram client.'}
           </small>
         </div>
+        <div class="phone-row">
+          <div>
+            <span class="eyebrow">TWO-STEP VERIFICATION</span>
+            <code>
+              {props.account.hasPassword
+                ? 'Password enabled (all-zero code)'
+                : 'Disabled'}
+            </code>
+          </div>
+          <button
+            class="button outlined"
+            disabled={!props.connected}
+            onClick={() => setPasswordOpen(true)}
+          >
+            {props.account.hasPassword ? 'Change' : 'Set password'}
+          </button>
+        </div>
+        <Show when={props.account.hasPassword}>
+          <button
+            class="button outlined"
+            disabled={!props.connected}
+            onClick={() =>
+              void action.run(async () => {
+                await props.setPassword(null)
+                setPasswordOpen(false)
+              })
+            }
+          >
+            Remove password
+          </button>
+        </Show>
+      </Show>
+      <Show when={passwordOpen()}>
+        <PasswordModal
+          hasPassword={props.account.hasPassword ?? false}
+          onClose={() => setPasswordOpen(false)}
+          onSubmit={async (password) => {
+            await props.setPassword(password)
+            setPasswordOpen(false)
+          }}
+        />
       </Show>
       <ActionError error={action.error()} />
     </article>
+  )
+}
+
+function PasswordModal(props: {
+  hasPassword: boolean
+  onClose: () => void
+  onSubmit: (password: string) => Promise<void>
+}) {
+  const [password, setPassword] = createSignal(''),
+    [confirm, setConfirm] = createSignal(''),
+    action = useAction()
+  const mismatch = () =>
+    password() !== confirm() ? 'Passwords do not match.' : undefined
+  const weak = () =>
+    password().length < 1 ? 'Password must not be empty.' : undefined
+  const problem = () => mismatch() ?? weak()
+  return (
+    <Modal
+      title={props.hasPassword ? 'Change login password' : 'Set login password'}
+      onClose={props.onClose}
+    >
+      <p>
+        With a password set, entering an all-zero code (<code>000000</code>, or{' '}
+        <code>00000</code> when the client asks for five digits) switches to
+        password login; any other valid login code signs in directly.
+      </p>
+      <label class="field">
+        <span>Password</span>
+        <input
+          type="password"
+          autocomplete="new-password"
+          value={password()}
+          disabled={action.busy()}
+          onInput={(event) => setPassword(event.currentTarget.value)}
+        />
+      </label>
+      <label class="field">
+        <span>Confirm password</span>
+        <input
+          type="password"
+          autocomplete="new-password"
+          value={confirm()}
+          disabled={action.busy()}
+          onInput={(event) => setConfirm(event.currentTarget.value)}
+        />
+      </label>
+      <Show when={problem()}>
+        <p class="notice error" role="alert">{problem()}</p>
+      </Show>
+      <ActionError error={action.error()} />
+      <button
+        class="button filled"
+        disabled={action.busy() || Boolean(problem())}
+        onClick={() => void action.run(() => props.onSubmit(password()))}
+      >
+        {action.busy() ? 'Saving…' : 'Save password'}
+      </button>
+    </Modal>
   )
 }
 function QrLogin(props: {

@@ -17,7 +17,6 @@ const requests: Record<string, tl.RpcMethod> = {
   'account.getDefaultProfilePhotoEmojis': { _: 'account.getDefaultProfilePhotoEmojis', hash: Long.ZERO },
   'account.getContactSignUpNotification': { _: 'account.getContactSignUpNotification' },
   'account.getGlobalPrivacySettings': { _: 'account.getGlobalPrivacySettings' },
-  'account.getPassword': { _: 'account.getPassword' },
   'account.getPrivacy': { _: 'account.getPrivacy', key: { _: 'inputPrivacyKeyStatusTimestamp' } },
   'account.getRecentEmojiStatuses': { _: 'account.getRecentEmojiStatuses', hash: Long.ZERO },
   'account.getSavedRingtones': { _: 'account.getSavedRingtones', hash: Long.ZERO },
@@ -180,12 +179,6 @@ describe('Telegram Android optional RPC responses', () => {
     )).toEqual({ _: 'emojiList', hash: Long.ZERO, documentId: [] })
     expect(androidRpcHandlers['account.getPrivacy'](requests['account.getPrivacy']))
       .toEqual({ _: 'account.privacyRules', rules: [{ _: 'privacyValueAllowAll' }], chats: [], users: [] })
-    expect(androidRpcHandlers['account.getPassword'](requests['account.getPassword']))
-      .toMatchObject({
-        _: 'account.password',
-        newAlgo: { _: 'passwordKdfAlgoUnknown' },
-        newSecureAlgo: { _: 'securePasswordKdfAlgoUnknown' },
-      })
     expect(androidRpcHandlers['premium.getMyBoosts'](requests['premium.getMyBoosts']))
       .toEqual({ _: 'premium.myBoosts', myBoosts: [], chats: [], users: [] })
     expect(androidRpcHandlers['messages.getSavedDialogs'](requests['messages.getSavedDialogs']))

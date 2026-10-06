@@ -10,7 +10,7 @@ import { TlBinaryReader, TlBinaryWriter, TlSerializationCounter, type TlReaderMa
 import type { tl } from '@mtcute/core'
 import { __tlReaderMap, __tlWriterMap } from '@mtcute/core/utils.js'
 import { NodeCryptoProvider } from '@mtcute/node/utils.js'
-import { LogManager, generateKeyAndIvFromNonce, createAesIgeForMessage } from '@mtcute/core/utils.js'
+import { LogManager, generateKeyAndIvFromNonce, createAesIgeForMessage, computeSrpParams } from '@mtcute/core/utils.js'
 import { NodePlatform } from '@mtcute/node'
 import { ObfuscatedPacketCodec } from '@mtcute/core'
 import Long from 'long'
@@ -981,6 +981,60 @@ describe('bridge login e2e', () => {
         _: 'auth.signIn', phoneNumber: account.auth.virtualPhone, phoneCodeHash: sent.phoneCodeHash,
         phoneCode: bridge.generateLoginCode(account.auth.totpSecret),
       }, 6)).toMatchObject({ _: 'auth.authorization' })
+    } finally {
+      client?.close()
+      await stop()
+    }
+  }, 30_000)
+
+  it('signs in through the two-step verification password after entering 000000', async () => {
+    const { ctx, port, pubKey, stop } = await startApp()
+    let client: TestClient | undefined
+    try {
+      const account = await waitForPlatformLogin(ctx, 'static')
+      await ctx.database.set('mtproto_auth_session', { id: account.auth.id }, {
+        passwordSrp: await bridge.generateSrpVerifier('e2e-password'),
+      })
+      client = await TestClient.connect(port)
+      const key = await doClientHandshake(client, pubKey)
+      const session = Long.fromInt(0x77331127)
+      await callRpc(client, key, session, {
+        _: 'auth.sendCode', phoneNumber: `+${account.auth.virtualPhone}`, apiId: 1, apiHash: 'x',
+        settings: { _: 'codeSettings' },
+      }, 2)
+
+      const passwordInfo = await callRpc(client, key, session, { _: 'account.getPassword' }, 4)
+      expect(passwordInfo).toMatchObject({ _: 'account.password', hasPassword: true })
+      expect(passwordInfo.currentAlgo).toMatchObject({
+        _: 'passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow', g: 3,
+      })
+
+      expect(await callRpc(client, key, session, {
+        _: 'auth.signIn', phoneNumber: account.auth.virtualPhone,
+        phoneCodeHash: `hash_${account.auth.id}`,
+        phoneCode: '000000',
+      }, 6)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
+      // Five-digit clients ask for 00000 instead; any all-zero code opts in.
+      expect(await callRpc(client, key, session, {
+        _: 'auth.signIn', phoneNumber: account.auth.virtualPhone,
+        phoneCodeHash: `hash_${account.auth.id}`,
+        phoneCode: '00000',
+      }, 8)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'SESSION_PASSWORD_NEEDED' })
+
+      const wrongCheck = await computeSrpParams(crypto, passwordInfo, 'wrong-password')
+      expect(await callRpc(client, key, session, {
+        _: 'auth.checkPassword', password: wrongCheck,
+      }, 10)).toMatchObject({ _: 'mt_rpc_error', errorCode: 400, errorMessage: 'PASSWORD_HASH_INVALID' })
+
+      const check = await computeSrpParams(crypto, passwordInfo, 'e2e-password')
+      expect(await callRpc(client, key, session, {
+        _: 'auth.checkPassword', password: check,
+      }, 12)).toMatchObject({ _: 'auth.authorization', user: { self: true } })
+      expect(await ctx.database.get('mtproto_auth_binding', {
+        authKeyId: Buffer.from(key.authKeyId).toString('hex'),
+      })).toMatchObject([
+        { platformId: 'static', platformSessionId: account.session.id },
+      ])
     } finally {
       client?.close()
       await stop()
