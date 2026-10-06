@@ -1739,7 +1739,7 @@ describe('QQNTPlatform mapping', () => {
           sticker: {
             stickerId: 'sysface:506', packId: '4', title: '/????', format: 'animated' as const,
             mimeType: 'image/apng', width: 240, height: 240, version: 1,
-            reference: { kind: 'sysface', faceId: '506', faceType: 3, name: '/????', animated: true },
+            reference: { kind: 'sysface', faceId: '506', faceType: 3, name: '/????', animated: true } as const,
           },
         }],
       }],
@@ -1773,7 +1773,7 @@ describe('QQNTPlatform mapping', () => {
           sticker: {
             stickerId: 'sysface:476', packId: '3', title: '/???', format: 'animated' as const,
             mimeType: 'image/apng', width: 240, height: 240,
-            reference: { kind: 'sysface', faceId: '476', faceType: 3, name: '/???', animated: true },
+            reference: { kind: 'sysface', faceId: '476', faceType: 3, name: '/???', animated: true } as const,
           },
         }],
       }],

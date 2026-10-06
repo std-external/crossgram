@@ -719,7 +719,7 @@ describe('request inbox creation time', () => {
     }) as tl.messages.RawDialogs
     const inboxPeerId = rpc.peerTlId(REQUEST_INBOX_CONVERSATION_ID)
     const dialog = page.dialogs.find((item) =>
-      item.peer._ === 'peerUser' && item.peer.userId === inboxPeerId)
+      item._ === 'dialog' && item.peer._ === 'peerUser' && item.peer.userId === inboxPeerId) as tl.RawDialog | undefined
     expect(dialog).toBeDefined()
     const preview = page.messages.find((item) =>
       item._ === 'message' && item.id === dialog!.topMessage) as tl.RawMessage

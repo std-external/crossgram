@@ -126,7 +126,7 @@ describe('merged-forward avatars', () => {
     const avatar = media('avatar:group:99:original-v1')
     const lookup = vi.fn(async () => avatar)
     const adapter = platform(avatar)
-    adapter.messageBundles = { load: async () => [], avatar: lookup }
+    Object.assign(adapter, { messageBundles: { load: async () => [], avatar: lookup } })
     const projection = makeMergedForwardProvider()
     const record = projection.remember(session.platformSessionId, bundle)
 
@@ -143,7 +143,7 @@ describe('merged-forward avatars', () => {
       throw new Error('adapter exploded')
     })
     const broken = platform()
-    broken.messageBundles = { load: async () => [], avatar: attempts as never }
+    Object.assign(broken, { messageBundles: { load: async () => [], avatar: attempts as never } })
     const projection = makeMergedForwardProvider()
     const record = projection.remember(session.platformSessionId, bundle)
 
@@ -152,12 +152,13 @@ describe('merged-forward avatars', () => {
     expect(attempts).toHaveBeenCalledTimes(2)
 
     const rejecting = platform()
-    rejecting.messageBundles = {
+    const rejectingBundles = {
       load: async () => [],
       avatar: async () => {
         throw new Error('bridge offline')
       },
     }
+    Object.assign(rejecting, { messageBundles: rejectingBundles })
     const second = projection.remember(session.platformSessionId, { ...bundle, id: 'bundle:rejecting' })
     await expect(projection.loadAvatar({ platform: rejecting, session }, second)).resolves.toBeUndefined()
 

@@ -106,8 +106,8 @@ describe('request inbox callback RPC e2e', () => {
       _: 'messages.getDialogs', offsetDate: 0, offsetId: 0, offsetPeer: { _: 'inputPeerEmpty' },
       limit: 100, hash: Long.ZERO,
     }) as tl.messages.RawDialogs
-    const inbox = page.dialogs.find((dialog) => dialog.peer._ === 'peerUser'
-      && dialog.peer.userId === dialogs.peerTlId(REQUEST_INBOX_CONVERSATION_ID))!
+    const inbox = page.dialogs.find((dialog) => dialog._ === 'dialog' && dialog.peer._ === 'peerUser'
+      && dialog.peer.userId === dialogs.peerTlId(REQUEST_INBOX_CONVERSATION_ID)) as tl.RawDialog
     const peer: tl.RawInputPeerUser = {
       _: 'inputPeerUser', userId: dialogs.peerTlId(REQUEST_INBOX_CONVERSATION_ID), accessHash: Long.ZERO,
     }

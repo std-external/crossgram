@@ -83,7 +83,7 @@ const platform: IMPlatform = {
   messageBundles: {
     async load() { return innerMessages },
     async avatar(_session, locator) {
-      return (locator as { root?: string }).root === bundle.locator.root ? bundleAvatar : undefined
+      return (locator as { root?: string }).root === (bundle.locator as { root?: string }).root ? bundleAvatar : undefined
     },
   },
   async subscribe() { return () => {} },

@@ -22,6 +22,7 @@ import { defineModels } from '../../bridge/src/models.js'
 import { ReactionRpc } from '../../bridge/src/reaction-rpc.js'
 import { UploadManager } from '../../bridge/src/upload-manager.js'
 import { defineQQNTEventCheckpointModel } from './event-checkpoint.js'
+import type { WireMessage } from './protocol.js'
 import { defineLegacyQQMediaSchema } from './legacy-media-schema.js'
 import { QQNTPlatform } from './index.js'
 import { defineQQMediaPreviewModel, QQMediaPreviewer } from './media-preview.js'
@@ -159,7 +160,7 @@ describe('QQNT same-second message ordering E2E', () => {
       id: 'shared-sequence-group', kind: 'group' as const, title: 'Shared sequence group',
       peerUid: 'shared-sequence-group', peerUin: '499314568', chatType: 2 as const,
     }
-    const wireMessages = [{
+    const wireMessages: WireMessage[] = [{
       id: 'content-490124', conversationId: conversation.id, senderId: 'alice',
       timestamp: 1_800_000_100, outgoing: false, msgSeq: '490124',
       parts: [{ type: 'text', text: 'reply target' }],
@@ -282,7 +283,7 @@ describe('QQNT same-second message ordering E2E', () => {
     }
     // QQ gives every poke notice the msgSeq of the content message it follows and
     // reports a reply to that notice with the notice's own id.
-    const wireMessages = [{
+    const wireMessages: WireMessage[] = [{
       id: 'content-46513', conversationId: conversation.id, senderId: 'alice',
       timestamp: 1_800_000_100, outgoing: false, msgSeq: '46513', telegramMessageId: 46513,
       parts: [{ type: 'text', text: 'reply target' }],
@@ -433,8 +434,9 @@ describe('QQNT same-second message ordering E2E', () => {
       }) as tl.messages.RawMessages
       expect(refreshed.messages.map((message) => (message as tl.RawMessage).id))
         .toEqual(expect.arrayContaining([content!.parts[0].tlMessageId]))
-      expect((refreshed.messages as tl.RawMessage[]).flatMap((message) =>
-        message.action?._ === 'messageActionCustomAction' ? [message.action.message] : []))
+      expect((refreshed.messages as tl.TypeMessage[]).flatMap((message) =>
+        message._ === 'messageService' && message.action._ === 'messageActionCustomAction'
+          ? [message.action.message] : []))
         .not.toContain('Carol poked you')
     } finally {
       await unsubscribe()

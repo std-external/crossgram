@@ -85,7 +85,7 @@ describe('undated request inbox delivery e2e', () => {
       ctx.database, registry, store, undefined,
       async (activeSession, event, options) => {
         const payload = await updates.publish(activeSession, event, options)
-        if (payload?._ === 'updates') pushed.push(payload)
+        if (payload && payload._ === 'updates') pushed.push(payload)
         return payload
       },
     )
@@ -116,7 +116,7 @@ describe('undated request inbox delivery e2e', () => {
     }) as tl.messages.RawDialogs
     const inboxPeerId = dialogs.peerTlId(REQUEST_INBOX_CONVERSATION_ID)
     const inboxDialog = page.dialogs.find((dialog) =>
-      dialog.peer._ === 'peerUser' && dialog.peer.userId === inboxPeerId)
+      dialog._ === 'dialog' && dialog.peer._ === 'peerUser' && dialog.peer.userId === inboxPeerId) as tl.RawDialog | undefined
     expect(inboxDialog).toBeDefined()
     const preview = page.messages.find((message) =>
       message._ === 'message' && message.id === inboxDialog!.topMessage) as tl.RawMessage
