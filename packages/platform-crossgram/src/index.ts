@@ -829,9 +829,10 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
       limit: query.limit,
       beforeId: query.before?.id,
       afterId: query.after?.id,
-      aroundUnreadSeq: !query.cursor && !query.before && !query.after
+      aroundUnreadSeq: !query.cursor && !query.before && !query.after && !query.latest
         ? this.firstUnreadSeq.get(conversation.id)
         : undefined,
+      latest: query.latest && !query.cursor && !query.before && !query.after ? 1 : undefined,
     })
     await waitAtMost(reactionWarmup, REACTION_CATALOG_GRACE_MS)
     if (response.messages.some(wireMessageHasQQFace)) await reactionWarmup

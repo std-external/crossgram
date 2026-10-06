@@ -656,6 +656,8 @@ export interface IMHistoryQuery extends IMPageQuery {
   before?: IMHistoryAnchor
   /** Fetch messages strictly newer than this platform message. */
   after?: IMHistoryAnchor
+  /** Without an anchor, start from the newest message instead of a platform-chosen window such as the unread boundary. */
+  latest?: boolean
 }
 
 export interface IMDialogPage<TMediaLocator = unknown> {

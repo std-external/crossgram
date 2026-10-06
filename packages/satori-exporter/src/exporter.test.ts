@@ -8,7 +8,7 @@ import WebSocket from 'ws'
 import { Readable } from 'node:stream'
 import { SatoriExporter, type SatoriExportConfig } from './exporter.js'
 import type {
-  IMConversation, IMConversationMember, IMMedia, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
+  IMConversation, IMConversationMember, IMHistoryPage, IMHistoryQuery, IMMedia, IMMessage, IMMessageInput, IMPlatform, PlatformCapabilities, PlatformSession, Unsubscribe,
 } from '@mtproto-relay/bridge'
 
 const session: PlatformSession = {
@@ -67,6 +67,16 @@ class TestPlatform implements IMPlatform {
     _messageIds: readonly string[],
     _options: { forEveryone: boolean },
   ): Promise<void> => {})
+  readonly getHistory = vi.fn(async (
+    _session: PlatformSession,
+    _conversation: { id: string },
+    _query?: IMHistoryQuery,
+  ): Promise<IMHistoryPage> => ({ messages: [] }))
+  readonly getMessage = vi.fn(async (
+    _session: PlatformSession,
+    _conversation: { id: string },
+    _messageId: string,
+  ): Promise<IMMessage | null> => null)
 }
 
 async function createExporter(satori: Partial<SatoriExportConfig> = {}, activeSession = session) {
@@ -1102,6 +1112,181 @@ describe('SatoriExporter', () => {
     expect(warnings).toHaveBeenCalledWith('Satori sticker export unavailable provider=%s sticker=%s', 'qq', 's1')
   })
 
+  describe('message.list', () => {
+    const group: IMConversation = { id: 'group:42', kind: 'group', spaceId: 'guild:7', title: 'QQ Group' }
+    const at = (id: string, timestamp: number): IMMessage => ({ ...message(id, group.id), timestamp })
+
+    it('starts an unanchored page at the newest messages and trims a wide first screen to the limit', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getConversation.mockResolvedValueOnce(group)
+      platform.getHistory.mockResolvedValueOnce({
+        messages: [at('m5', 5), at('m1', 1), at('m4', 4), at('m3', 3), at('m2', 2)],
+      })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, undefined, undefined, 2)
+
+      expect(platform.getHistory).toHaveBeenCalledWith(session, { id: group.id }, { latest: true, limit: 2 })
+      expect(page.data.map((item) => item.id)).toEqual(['m4', 'm5'])
+      expect(page).toMatchObject({ prev: 'm4', next: 'm4' })
+      expect(page.data[0]).toMatchObject({
+        content: 'message m4',
+        createdAt: 4_000,
+        channel: { id: group.id, type: 0, name: group.title },
+        guild: { id: 'guild:7', name: group.title },
+        user: { id: 'alice', name: 'Alice' },
+        member: { name: 'Alice' },
+      })
+    })
+
+    it('pages before an anchor, excluding the anchor and keeping the messages nearest it', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getHistory.mockResolvedValueOnce({
+        messages: [at('m1', 1), at('m2', 2), at('m3', 3), at('m4', 4)],
+      })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, 'm4', 'before', 2)
+
+      expect(platform.getHistory).toHaveBeenCalledWith(session, { id: group.id }, {
+        before: { id: 'm4', timestamp: 0 }, limit: 2,
+      })
+      expect(page.data.map((item) => item.id)).toEqual(['m2', 'm3'])
+      expect(page).toMatchObject({ prev: 'm2', next: 'm2' })
+    })
+
+    it('pages after an anchor toward newer messages', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getHistory.mockResolvedValueOnce({
+        messages: [at('m4', 4), at('m3', 3), at('m2', 2)],
+      })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, 'm1', 'after', 2)
+
+      expect(platform.getHistory).toHaveBeenCalledWith(session, { id: group.id }, {
+        after: { id: 'm1', timestamp: 0 }, limit: 2,
+      })
+      expect(page.data.map((item) => item.id)).toEqual(['m2', 'm3'])
+      expect(page).toMatchObject({ prev: 'm3', next: 'm3' })
+    })
+
+    it('keeps a pagination token for a short page whose upstream items were filtered', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getHistory.mockResolvedValueOnce({ messages: [at('m2', 2)] })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, 'm9', 'before', 50)
+
+      expect(page).toMatchObject({ prev: 'm2', next: 'm2' })
+    })
+
+    it('ends pagination on an empty upstream page', async () => {
+      const { ctx } = await createExporter()
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, 'm1', 'before', 10)
+
+      expect(page).toEqual({ data: [] })
+    })
+
+    it('loads both sides and the anchor itself around a message', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getHistory
+        .mockResolvedValueOnce({ messages: [at('m1', 1), at('m2', 2)] })
+        .mockResolvedValueOnce({ messages: [at('m4', 4), at('m5', 5)] })
+      platform.getMessage.mockResolvedValueOnce(at('m3', 3))
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, 'm3', 'around', 5)
+
+      expect(platform.getHistory).toHaveBeenNthCalledWith(1, session, { id: group.id }, {
+        before: { id: 'm3', timestamp: 0 }, limit: 2,
+      })
+      expect(platform.getHistory).toHaveBeenNthCalledWith(2, session, { id: group.id }, {
+        after: { id: 'm3', timestamp: 0 }, limit: 2,
+      })
+      expect(page.data.map((item) => item.id)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5'])
+      expect(page).toMatchObject({ prev: 'm1', next: 'm5' })
+    })
+
+    it('orders descending on request and skips recalled tombstones', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getHistory.mockResolvedValueOnce({
+        messages: [at('m1', 1), { ...at('m2', 2), recalled: true }, at('m3', 3)],
+      })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id, undefined, 'before', 10, 'desc')
+
+      expect(page.data.map((item) => item.id)).toEqual(['m3', 'm1'])
+      expect(page.prev).toBe('m1')
+    })
+
+    it('defaults the limit to 50 and caps it at 100', async () => {
+      const { ctx, platform } = await createExporter()
+
+      await ctx.bots[0]!.getMessageList(group.id)
+      await ctx.bots[0]!.getMessageList(group.id, undefined, 'before', 1_000)
+
+      expect(platform.getHistory.mock.calls.map(([, , query]) => query?.limit)).toEqual([50, 100])
+    })
+
+    it('degrades a message with unresolvable media to its text instead of failing the page', async () => {
+      const { ctx, platform, warnings } = await createExporter()
+      platform.resolveMediaUrl.mockResolvedValue(undefined as never)
+      platform.getHistory.mockResolvedValueOnce({ messages: [{
+        ...at('m1', 1),
+        content: { parts: [
+          { type: 'text', text: 'caption' },
+          { type: 'media', media: { id: 'photo', kind: 'image' } },
+        ] },
+      }] })
+
+      const page = await ctx.bots[0]!.getMessageList(group.id)
+
+      expect(page.data[0]!.content).toBe('caption[media]')
+      expect(warnings).toHaveBeenCalledWith(
+        'Satori history message render degraded conversation=%s message=%s error=%s',
+        group.id, 'm1', expect.stringContaining('cannot resolve media URL'),
+      )
+    })
+
+    it('fails when the platform has no history support', async () => {
+      const { ctx, platform } = await createExporter()
+      ;(platform as { getHistory?: unknown }).getHistory = undefined
+
+      await expect(ctx.bots[0]!.getMessageList(group.id)).rejects.toThrow('does not support message history')
+    })
+
+    it('rejects a page that resolves after its bot session is replaced', async () => {
+      const { ctx, exporter, platform } = await createExporter()
+      const bot = ctx.bots[0]!
+      let resolve!: (page: IMHistoryPage) => void
+      platform.getHistory.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+
+      const pending = bot.getMessageList(group.id)
+      await vi.waitFor(() => expect(platform.getHistory).toHaveBeenCalled())
+      exporter.start(platform, replacementSession)
+      resolve({ messages: [at('m1', 1)] })
+
+      await expect(pending).rejects.toThrow('no longer active')
+    })
+  })
+
+  describe('message.get', () => {
+    it('returns a single message with its author and channel', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getMessage.mockResolvedValueOnce(message('m1', 'direct:7'))
+
+      await expect(ctx.bots[0]!.getMessage('direct:7', 'm1')).resolves.toMatchObject({
+        id: 'm1', content: 'message m1', channel: { id: 'direct:7', type: 1 }, user: { id: 'alice' },
+      })
+      expect(platform.getMessage).toHaveBeenCalledWith(session, { id: 'direct:7' }, 'm1')
+    })
+
+    it('fails for missing and recalled messages', async () => {
+      const { ctx, platform } = await createExporter()
+      platform.getMessage.mockResolvedValueOnce({ ...message('m2', 'group:42'), recalled: true })
+
+      await expect(ctx.bots[0]!.getMessage('group:42', 'm1')).rejects.toThrow('cannot find message')
+      await expect(ctx.bots[0]!.getMessage('group:42', 'm2')).rejects.toThrow('cannot find message')
+    })
+  })
+
   it('rejects outbound messages after the exporter session stops', async () => {
     const { ctx, exporter } = await createExporter()
     const bot = ctx.bots[0]!
@@ -1447,6 +1632,40 @@ describe('SatoriExporter', () => {
       name: 'Moderator', nick: 'Moderator', title: 'Moderator', joined_at: 1_700_000_000_000,
     })
     expect(platform.getConversationMember).toHaveBeenCalledWith(session, { id: 'guild:7' }, 'alice')
+  })
+
+  it('serves message.list pages with snake_case fields through the authenticated Satori HTTP route', async () => {
+    const { ctx, platform } = await createSatoriServer('test-token')
+    platform.getHistory
+      .mockResolvedValueOnce({ messages: [3, 2, 1].map((n) => ({ ...message(`m${n}`, 'group:42'), timestamp: n })) })
+      .mockResolvedValueOnce({ messages: [] })
+    const list = (body: object) => fetch(new URL('/satori/v1/message.list', ctx.server.baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'content-type': 'application/json',
+        'satori-platform': 'qq',
+        'satori-user-id': 'self',
+      },
+      body: JSON.stringify(body),
+    })
+
+    const first = await list({ channel_id: 'group:42', limit: 2 })
+    expect(first.status).toBe(200)
+    await expect(first.json()).resolves.toMatchObject({
+      data: [
+        { id: 'm2', content: 'message m2', created_at: 2_000, channel: { id: 'group:42' }, user: { id: 'alice' } },
+        { id: 'm3', created_at: 3_000 },
+      ],
+      prev: 'm2',
+      next: 'm2',
+    })
+    const last = await list({ channel_id: 'group:42', next: 'm2', limit: 2 })
+    await expect(last.json()).resolves.toEqual({ data: [] })
+    expect(platform.getHistory).toHaveBeenNthCalledWith(1, session, { id: 'group:42' }, { latest: true, limit: 2 })
+    expect(platform.getHistory).toHaveBeenNthCalledWith(2, session, { id: 'group:42' }, {
+      before: { id: 'm2', timestamp: 0 }, limit: 2,
+    })
   })
 
   it('serves Satori meta and message.create through the patched server plugin', async () => {

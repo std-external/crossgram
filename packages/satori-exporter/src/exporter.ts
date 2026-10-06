@@ -3,7 +3,7 @@ import type { Context } from 'cordis'
 import {
   probeImageDimensions, providerBelongsToAccount, serviceActionText,
   type IMConversation, type IMConversationMember, type IMMediaInput, type IMUser, type IMMessage, type IMMessageInput, type IMMessagePart,
-  type IMPlatform, type IMSticker, type IMStickerProvider, type IMStickerSendPlan, type IMTextEntity,
+  type IMHistoryQuery, type IMPlatform, type IMSticker, type IMStickerProvider, type IMStickerSendPlan, type IMTextEntity,
   type IngestResult, type JsonValue, type PlatformSession, type StickerProviderContext,
 } from '@mtproto-relay/bridge'
 
@@ -15,6 +15,8 @@ export interface SatoriExportConfig {
 }
 
 const DEFAULT_MAX_MEDIA_BYTES = 8 * 1024 * 1024
+const DEFAULT_MESSAGE_LIST_LIMIT = 50
+const MAX_MESSAGE_LIST_LIMIT = 100
 const MAX_STICKER_ATTRIBUTE_LENGTH = 256
 const MAX_STICKER_REFERENCE_LENGTH = 4 * 1024
 const MAX_STICKER_REFERENCE_INPUT_LENGTH = MAX_STICKER_REFERENCE_LENGTH
@@ -253,6 +255,92 @@ export class SatoriExporter {
       user,
     }]
   }
+  async getMessage(bot: SatoriExportBot, generation: number, channelId: string, messageId: string): Promise<Universal.Message> {
+    const platform = this._platform
+    const session = this._session
+    if (!platform || !session || !this.isActive(bot, generation)) throw new Error('Satori exporter bot is no longer active')
+    if (!platform.getMessage) throw new Error('Satori exporter platform does not support message lookup')
+    const conversation = await this._resolveConversation(bot, generation, platform, session, channelId)
+    const message = await platform.getMessage(session, { id: channelId }, messageId)
+    if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+      throw new Error('Satori exporter bot is no longer active')
+    }
+    if (!message || message.recalled) throw new Error(`Satori exporter cannot find message: ${channelId}/${messageId}`)
+    return await this._listedMessage(message, conversation, platform, session)
+  }
+
+  /**
+   * Pages through upstream history for `message.list`.
+   *
+   * The pagination token is a platform message ID. `before`/`after` exclude
+   * the anchor itself; `around` includes it when the platform can look it up.
+   */
+  async getMessageList(
+    bot: SatoriExportBot,
+    generation: number,
+    channelId: string,
+    next: string | undefined,
+    direction: Universal.Direction = 'before',
+    limit: number | undefined,
+    order: Universal.Order = 'asc',
+  ): Promise<Universal.BidiList<Universal.Message>> {
+    const platform = this._platform
+    const session = this._session
+    if (!platform || !session || !this.isActive(bot, generation)) throw new Error('Satori exporter bot is no longer active')
+    if (!platform.getHistory) throw new Error('Satori exporter platform does not support message history')
+    const getHistory = platform.getHistory.bind(platform)
+    const conversation = await this._resolveConversation(bot, generation, platform, session, channelId)
+    const count = Math.min(MAX_MESSAGE_LIST_LIMIT, Math.max(1, Math.floor(limit || DEFAULT_MESSAGE_LIST_LIMIT)))
+    const anchor = next ? { id: next, timestamp: 0 } : undefined
+    const fetch = async (query: IMHistoryQuery) => {
+      const page = await getHistory(session, { id: channelId }, query)
+      if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+        throw new Error('Satori exporter bot is no longer active')
+      }
+      return page
+    }
+    // Platforms drop gray tips and recalls after paging, so a short page does
+    // not mean the end. Only an empty upstream page does, as with Discord.
+    // QQ's first-screen APIs may also ignore the requested count, so every
+    // side is trimmed to the messages nearest its anchor.
+
+    let messages: IMMessage[]
+    let prev: string | undefined
+    let following: string | undefined
+    if (!anchor || direction === 'before') {
+      const page = await fetch(anchor ? { before: anchor, limit: count } : { latest: true, limit: count })
+      messages = chronological(page.messages, anchor?.id).slice(-count)
+      prev = following = messages[0]?.id
+    } else if (direction === 'after') {
+      const page = await fetch({ after: anchor, limit: count })
+      messages = chronological(page.messages, anchor.id).slice(0, count)
+      prev = following = messages.at(-1)?.id
+    } else {
+      const side = Math.max(1, Math.floor((count - 1) / 2))
+      const [older, newer, center] = await Promise.all([
+        fetch({ before: anchor, limit: side }),
+        fetch({ after: anchor, limit: side }),
+        platform.getMessage?.(session, { id: channelId }, anchor.id).catch(() => null) ?? null,
+      ])
+      const before = chronological(older.messages, anchor.id).slice(-side)
+      const after = chronological(newer.messages, anchor.id).slice(0, side)
+      messages = chronological([...before, ...(center ? [center] : []), ...after])
+      prev = before[0]?.id
+      following = after.at(-1)?.id
+    }
+
+    const data: Universal.Message[] = []
+    for (const message of messages) {
+      if (message.recalled) continue
+      data.push(await this._listedMessage(message, conversation, platform, session))
+      if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+        throw new Error('Satori exporter bot is no longer active')
+      }
+    }
+    if (order === 'desc') data.reverse()
+    return { data, ...(prev ? { prev } : {}), ...(following ? { next: following } : {}) }
+  }
+
   async deleteMessage(bot: SatoriExportBot, generation: number, channelId: string, messageId: string): Promise<void> {
     const platform = this._platform
     const session = this._session
@@ -264,6 +352,55 @@ export class SatoriExporter {
     }
   }
 
+
+  private async _resolveConversation(
+    bot: SatoriExportBot,
+    generation: number,
+    platform: IMPlatform,
+    session: PlatformSession,
+    channelId: string,
+  ): Promise<IMConversation> {
+    let conversation = this._conversations.get(channelId)
+    if (!conversation && platform.getConversation) {
+      conversation = await platform.getConversation(session, channelId) ?? undefined
+      if (!this.isActive(bot, generation) || this._platform !== platform || this._session !== session) {
+        throw new Error('Satori exporter bot is no longer active')
+      }
+      if (conversation) this._conversations.set(conversation.id, conversation)
+    }
+    if (!conversation) throw new Error(`Satori exporter cannot resolve channel: ${channelId}`)
+    return conversation
+  }
+
+  /** One unrenderable history item degrades to its text instead of failing the whole page. */
+  private async _listedMessage(
+    message: IMMessage,
+    conversation: IMConversation,
+    platform: IMPlatform,
+    session: PlatformSession,
+  ): Promise<Universal.Message> {
+    let elements: h[]
+    try {
+      elements = await this._messageElements(message, conversation, platform, session)
+    } catch (error) {
+      this._logger.warn(
+        'Satori history message render degraded conversation=%s message=%s error=%s',
+        conversation.id, message.id, formatError(error),
+      )
+      elements = message.content.parts.flatMap((part) => part.type === 'text' ? textElements(part) : [h.text(`[${part.type}]`)])
+    }
+    const user = satoriMessageUser(message, await this._avatarUrl(message.sender, platform, session))
+    const member = conversation.kind === 'direct' ? undefined : satoriMessageMember(message, user)
+    return {
+      id: message.id,
+      content: elements.join(''),
+      createdAt: message.timestamp * 1_000,
+      channel: satoriChannel(conversation),
+      ...(conversation.kind === 'direct' ? {} : { guild: satoriGuild(conversation) }),
+      user,
+      ...(member ? { member } : {}),
+    }
+  }
 
   /** A missing avatar never holds back the message or member it decorates. */
   private async _avatarUrl(
@@ -339,6 +476,22 @@ class SatoriExportBot extends Bot {
     if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
     return this._exporter.sendMessage(this, this.generation, channelId, content)
   }
+  override getMessage(channelId: string, messageId: string): Promise<Universal.Message> {
+    if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
+    return this._exporter.getMessage(this, this.generation, channelId, messageId)
+  }
+
+  override getMessageList(
+    channelId: string,
+    next?: string,
+    direction?: Universal.Direction,
+    limit?: number,
+    order?: Universal.Order,
+  ): Promise<Universal.BidiList<Universal.Message>> {
+    if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
+    return this._exporter.getMessageList(this, this.generation, channelId, next, direction, limit, order)
+  }
+
   override deleteMessage(channelId: string, messageId: string): Promise<void> {
     if (!this._exporter.isActive(this, this.generation)) return Promise.reject(new Error('Satori exporter bot is not ready'))
     return this._exporter.deleteMessage(this, this.generation, channelId, messageId)
@@ -665,6 +818,16 @@ function textElements(part: Extract<IMMessagePart, { type: 'text' }>): h[] {
   }
   if (offset < part.text.length) output.push(h.text(part.text.slice(offset)))
   return output.length ? output : [h.text(part.text)]
+}
+
+/** Oldest first, without duplicates or the pagination anchor itself. */
+function chronological(messages: readonly IMMessage[], excludeId?: string): IMMessage[] {
+  const unique = new Map<string, IMMessage>()
+  for (const message of messages) if (message.id !== excludeId) unique.set(message.id, message)
+  return [...unique.values()].sort((left, right) =>
+    left.timestamp - right.timestamp
+    || (left.nativeOrderKey && right.nativeOrderKey ? left.nativeOrderKey.localeCompare(right.nativeOrderKey) : 0)
+    || left.id.localeCompare(right.id))
 }
 
 function satoriChannel(conversation: IMConversation): Universal.Channel {

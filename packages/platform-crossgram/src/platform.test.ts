@@ -896,6 +896,30 @@ describe('QQNTPlatform mapping', () => {
     }))
   })
 
+  it('requests a latest page without the cached unread anchor only for unanchored latest history', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getDialogs = vi.fn(async () => ({ conversations: [{
+      id: '2:group', kind: 'group' as const, title: 'Group',
+      peerUid: 'group', peerUin: 'group', chatType: 2 as const,
+      unreadCount: 3, firstUnread: { msgSeq: 'unread-seq', msgTime: '10' },
+    }] }))
+    platform.client.getReactionCatalog = vi.fn(async () => ({ available: [], reactions: [], maxSelected: 20 }))
+    platform.client.getHistory = vi.fn(async () => ({ messages: [] }))
+    await platform.getDialogs(session)
+
+    await platform.getHistory(session, { id: '2:group' }, { latest: true, limit: 2 })
+    await platform.getHistory(session, { id: '2:group' }, {
+      latest: true, limit: 2, before: { id: 'anchor', timestamp: 0 },
+    })
+    await platform.getHistory(session, { id: '2:group' }, { limit: 2 })
+
+    expect(vi.mocked(platform.client.getHistory).mock.calls.map(([, query]) => query)).toEqual([
+      { cursor: undefined, limit: 2, beforeId: undefined, afterId: undefined, aroundUnreadSeq: undefined, latest: 1 },
+      { cursor: undefined, limit: 2, beforeId: 'anchor', afterId: undefined, aroundUnreadSeq: undefined, latest: undefined },
+      { cursor: undefined, limit: 2, beforeId: undefined, afterId: undefined, aroundUnreadSeq: 'unread-seq', latest: undefined },
+    ])
+  })
+
   it('filters and cleans zero-peer dialogs without hiding real QQ service messages', async () => {
     const remove = vi.fn(async () => {})
     const database = {
@@ -2553,6 +2577,7 @@ describe('QQNTPlatform mapping', () => {
       beforeId: undefined,
       afterId: undefined,
       aroundUnreadSeq: 'opaque-seq-42',
+      latest: undefined,
     })
     await expect(platform.getConversationMember(
       session, { id: '2:1058754719' }, 'self',

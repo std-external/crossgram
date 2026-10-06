@@ -301,6 +301,7 @@ export class QQNTClient {
     beforeId?: string
     afterId?: string
     aroundUnreadSeq?: string
+    latest?: number
   } = {}): Promise<{ messages: WireMessage[], nextCursor?: string }> {
     return this.revalidatedJson(`/conversations/${encodeURIComponent(id)}/history${queryString(query)}`)
   }
