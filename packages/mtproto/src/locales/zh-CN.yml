@@ -7,3 +7,4 @@ maxConnectionsPerIp: 单个远端 IP 可保留的 MTProto TCP 并发连接上限
 connectionIdleTimeoutMs: TCP 连接无活动达到此毫秒数后关闭。设为 0 时禁用。
 keepAliveInitialDelayMs: TCP 空闲达到此毫秒数后开始操作系统 keepalive 探测。
 wsPort: 浏览器客户端使用的 WebSocket MTProto 端口。留空时禁用；设为 0 时使用临时端口。
+wsPath: 在共享 HTTP 服务器上提供 MTProto-over-WebSocket 的路径，让该服务器托管的浏览器客户端连接同源地址。

@@ -26,7 +26,7 @@ const cases = [
   ]],
   ['debug', debugConfig, ['maxEvents', 'initiallyPaused', 'apiPath']],
   ['mtproto', mtprotoConfig, [
-    'port', 'host', 'rsaKeyPath', 'authKeyStorePath',
+    'port', 'wsPort', 'wsPath', 'host', 'rsaKeyPath', 'authKeyStorePath',
     'maxConnections', 'maxConnectionsPerIp', 'connectionIdleTimeoutMs', 'keepAliveInitialDelayMs',
   ]],
   ['mtproto-statistics', statisticsConfig, [

@@ -7,3 +7,4 @@ maxConnectionsPerIp: Maximum simultaneous MTProto TCP connections retained for o
 connectionIdleTimeoutMs: Close a connection after this many milliseconds without socket activity. Set to 0 to disable.
 keepAliveInitialDelayMs: Start operating-system TCP keepalive probes after this many idle milliseconds.
 wsPort: WebSocket MTProto port for browser clients. Leave unset to disable; use 0 for an ephemeral port.
+wsPath: Serve MTProto-over-WebSocket at this path on the shared HTTP server, so a browser client hosted by that server connects to its own origin.
