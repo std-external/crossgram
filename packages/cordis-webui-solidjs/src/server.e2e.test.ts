@@ -206,7 +206,11 @@ describe('Solid WebUI production service', () => {
       await expect
         .poll(() => page.locator('.navigation').getAttribute('class'))
         .toContain('open')
-      await page.getByRole('button', { name: 'Close navigation' }).click()
+      await page
+        .getByRole('button', { name: 'Close navigation' })
+        // The drawer (z-index 30) overlays the scrim (z-index 25), so click the
+        // part of the scrim right of the 300px drawer in the 390px viewport.
+        .click({ position: { x: 350, y: 100 } })
       expect(await page.evaluate(() => '__VUE__' in window)).toBe(false)
       await expectReconnectWithoutReload(page, app.ui)
       expect(errors).toEqual([])
