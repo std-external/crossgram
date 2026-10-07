@@ -19,6 +19,7 @@ import {
 } from './message-actions.js'
 import { isLocalOnlyConversation, isRequestInboxConversation } from './request-inbox.js'
 import { RecentPromiseCache } from './recent-promise-cache.js'
+import { BoundedMap } from './bounded-map.js'
 import { makeUser } from './synthetic.js'
 import { toUser, type MessageStore, type ProjectedMessage } from './message-store.js'
 import { PlatformDataService } from './platform-manager.js'
@@ -90,6 +91,15 @@ type MentionReadPublisher = (
 // message IDs are strictly positive, so zero is a wire-compatible sentinel that
 // does not require a private TL constructor.
 export const CANCELLED_MESSAGE_ID = 0
+
+/**
+ * Entry ceiling for the per-device message id indexes. One message can occupy
+ * up to three `_messageToTl` keys (primary, source alias, QQ sequence) plus one
+ * `_tlToMessage` and one `_messageOutgoingByTl` entry, so this bounds the three
+ * maps at roughly 60-70 MiB together instead of the gigabytes an unbounded
+ * device accumulated over a week.
+ */
+const MAX_CACHED_MESSAGE_INDEX_ENTRIES = 200_000
 
 
 interface MessageRef {
@@ -233,9 +243,9 @@ export class DialogRpc {
   private readonly _tlToPeer = new Map<number, string>()
   private readonly _userToTl = new Map<string, number>()
   private readonly _tlToUser = new Map<number, string>()
-  private readonly _messageToTl = new Map<string, number>()
-  private readonly _tlToMessage = new Map<number, MessageRef>()
-  private readonly _messageOutgoingByTl = new Map<number, boolean>()
+  private readonly _messageToTl: BoundedMap<string, number>
+  private readonly _tlToMessage: BoundedMap<number, MessageRef>
+  private readonly _messageOutgoingByTl: BoundedMap<number, boolean>
   private readonly _memoryMentionStates = new Map<string, Map<number, boolean>>()
   private readonly _unreadMentionCounts = new Map<string, number>()
   private _nextMessageId = 1
@@ -311,6 +321,19 @@ export class DialogRpc {
     private readonly _messageProjection?: MessageProjectionPipeline,
   ) {
     this._actions = new PlatformMessageActions(_platform, _session)
+    // These three maps index the messages a device has touched. They are a
+    // synchronous cache in front of the durable `mtproto_tl_message_part`
+    // table, and every read path already falls back to `MessageStore` on a
+    // miss, so a store-backed instance can drop its oldest entries: without a
+    // bound they grow with every message the device ever sees and never shrink,
+    // which is how the 7-day production run reached ~1.4 GiB of anonymous
+    // memory. A storeless instance keeps them complete — it has no durable
+    // table to fall back to, and `_messageId` must not hand out an id it has
+    // already used earlier in the same process.
+    const messageIndexLimit = store ? MAX_CACHED_MESSAGE_INDEX_ENTRIES : Number.POSITIVE_INFINITY
+    this._messageToTl = new BoundedMap(messageIndexLimit)
+    this._tlToMessage = new BoundedMap(messageIndexLimit)
+    this._messageOutgoingByTl = new BoundedMap(messageIndexLimit)
     if (store) {
       this._store = store
       this._data = new PlatformDataService(

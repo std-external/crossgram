@@ -13,6 +13,7 @@ import type {
   IMDialogPage, IMHistoryPage, IMMessage, IMMessageInput, IMMessageSearchQuery, IMPlatform, IMUser, PlatformSession,
 } from './platform.js'
 import { MessageProjectionPipeline } from './message-projection.js'
+import type { MessageStore } from './message-store.js'
 
 const session: PlatformSession = {
   platformSessionId: 'session-1',
@@ -21,6 +22,13 @@ const session: PlatformSession = {
   credentials: { token: 'test' },
   metadata: { firstName: 'Current', lastName: 'User', phone: 'qq-uin-must-not-project' },
   virtualPhone: '888123456789012',
+}
+
+/** The per-device message id indexes, reached only to assert their bound. */
+interface DialogMessageIndexes {
+  _messageToTl: Map<string, number> & { limit: number }
+  _tlToMessage: Map<number, unknown> & { limit: number }
+  _messageOutgoingByTl: Map<number, boolean> & { limit: number }
 }
 
 /** Peer/user TL ID for this test session, matching DialogRpc's session-scoped allocation. */
@@ -1864,6 +1872,25 @@ describe('DialogRpc', () => {
         peer: { _: 'inputPeerUser', userId: 987654321, accessHash: Long.ONE },
       },
     })).rejects.toMatchObject({ code: 400, text: 'PEER_ID_INVALID' } satisfies Partial<RpcError>)
+  })
+
+  it('bounds the per-device message indexes when the store can answer a miss', () => {
+    const indexed = new DialogRpc(
+      new DialogTestPlatform(), session, {} as MessageStore,
+    ) as unknown as DialogMessageIndexes
+    for (const map of [indexed._messageToTl, indexed._tlToMessage, indexed._messageOutgoingByTl]) {
+      expect(map.limit).toBeGreaterThan(0)
+      expect(Number.isFinite(map.limit)).toBe(true)
+    }
+  })
+
+  it('keeps the per-device message indexes complete without a durable store', () => {
+    const indexed = new DialogRpc(
+      new DialogTestPlatform(), session,
+    ) as unknown as DialogMessageIndexes
+    for (const map of [indexed._messageToTl, indexed._tlToMessage, indexed._messageOutgoingByTl]) {
+      expect(map.limit).toBe(Number.POSITIVE_INFINITY)
+    }
   })
 })
 
