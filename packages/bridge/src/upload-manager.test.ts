@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { UploadManager } from './upload-manager.js'
+import { UploadManager, UPLOAD_ABANDONED_TTL_MS } from './upload-manager.js'
 
 const directories: string[] = []
 
@@ -16,6 +16,14 @@ async function createManager() {
   directories.push(directory)
   return new UploadManager(directory)
 }
+
+async function createManagerWithRoot() {
+  const root = await mkdtemp(join(tmpdir(), 'bridge-upload-'))
+  directories.push(root)
+  return { manager: new UploadManager(root), root }
+}
+
+const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 
 async function collect(source: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
@@ -128,5 +136,72 @@ describe('UploadManager', () => {
     expect(aborted).toBeInstanceOf(Error)
     expect(manager.getStaged('session', 'bad-hash')).toBeUndefined()
     await expect(manager.open('session', 'bad-hash', 1)).rejects.toThrow('part is missing: 0')
+  })
+
+  it('releases staged media and prepared sinks abandoned past the idle window', async () => {
+    const manager = await createManager()
+    const source = { size: 3, async *stream() { yield new Uint8Array([1, 2, 3]) } }
+    const media = { kind: 'file' as const, name: 'abandoned.bin', size: 3, source }
+    const aborted: unknown[] = []
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-10-08T00:00:00Z'))
+      manager.stagePrepared('session', 'abandoned', media)
+      await manager.prepare('session', 'streamed', {
+        size: 3, md5: 'a', sha1: 'b', file10MMd5: 'c',
+      }, {
+        media,
+        sink: { async write() {}, async complete() {}, abort(reason) { aborted.push(reason) } },
+      })
+      vi.setSystemTime(new Date('2026-10-08T02:00:00Z'))
+      manager.stagePrepared('session', 'kept', media)
+
+      const result = await manager.sweep(UPLOAD_ABANDONED_TTL_MS)
+
+      expect(result).toMatchObject({ staged: 1, prepared: 1, directories: 0 })
+      expect(manager.getStaged('session', 'abandoned')).toBeUndefined()
+      expect(manager.getStaged('session', 'streamed')).toBeUndefined()
+      expect(manager.getStaged('session', 'kept')).toBeDefined()
+      expect(aborted).toHaveLength(1)
+      expect(aborted[0]).toBeInstanceOf(Error)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('deletes abandoned part directories but keeps owned and recent ones', async () => {
+    const { manager, root } = await createManagerWithRoot()
+    await manager.savePart('session', 'abandoned', 0, new Uint8Array([1]))
+    await manager.savePart('session', 'fresh', 0, new Uint8Array([2]))
+    await manager.savePart('session', 'live', 0, new Uint8Array([3]))
+    manager.stagePrepared('session', 'live', {
+      kind: 'file', name: 'live.bin', size: 1,
+      source: { size: 1, async *stream() { yield new Uint8Array([3]) } },
+    })
+    // A live entry keeps its directory whatever the parts' age; a directory
+    // nobody owns is judged by its own mtime so an in-flight legacy upload,
+    // which has no entry at all, survives.
+    const abandoned = join(root, digest('session'), digest('abandoned'))
+    const old = new Date(Date.now() - 2 * UPLOAD_ABANDONED_TTL_MS)
+    await utimes(abandoned, old, old)
+
+    const result = await manager.sweep(UPLOAD_ABANDONED_TTL_MS)
+
+    expect(result).toMatchObject({ staged: 0, prepared: 0, directories: 1 })
+    await expect(manager.open('session', 'abandoned', 1)).rejects.toThrow('part is missing: 0')
+    await expect(manager.open('session', 'fresh', 1)).resolves.toBeDefined()
+    await expect(manager.open('session', 'live', 1)).resolves.toBeDefined()
+  })
+
+  it('stages a prepared upload with the Telegram-second mtime clients expect', () => {
+    const manager = new UploadManager(join(tmpdir(), 'bridge-upload-unused'))
+    const staged = manager.stagePrepared('session', 'prepared-mtime', {
+      kind: 'file', name: 'a.bin', size: 1,
+      source: { size: 1, async *stream() { yield new Uint8Array([1]) } },
+    })
+    // Milliseconds here reached clients as a year-56000 `upload.file.mtime`.
+    expect(staged.timestamp).toBeGreaterThan(1_700_000_000)
+    expect(staged.timestamp).toBeLessThan(4_000_000_000)
+    expect(staged.updatedAt).toBeGreaterThan(1_700_000_000_000)
   })
 })

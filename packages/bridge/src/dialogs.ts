@@ -2396,7 +2396,9 @@ export class DialogRpc {
     const resolveAt = performance.now()
     const resolved = await this._resolveUploadedMedia(req.media)
     const resolveMs = performance.now() - resolveAt
-    const staged: StagedMedia = { ...resolved, timestamp: Math.floor(Date.now() / 1000) }
+    const staged: StagedMedia = {
+      ...resolved, timestamp: Math.floor(Date.now() / 1000), updatedAt: Date.now(),
+    }
     this._uploads.stage(staged)
     const result = makeStagedMessageMedia(staged, this._dcId)
     this._traceSlowMediaRpc('uploadMedia', {

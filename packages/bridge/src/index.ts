@@ -22,7 +22,7 @@ import {
   IMPlatformService, PlatformSubscriptionManager, migrateQualifiedPlatformIds,
   sessionFromRow, type PlatformRegistry,
 } from './platform-manager.js'
-import { UploadManager } from './upload-manager.js'
+import { UploadManager, UPLOAD_ABANDONED_TTL_MS } from './upload-manager.js'
 import { UpdateManager } from './update-manager.js'
 import { IMStickerService } from './sticker-provider.js'
 import { StickerRpc } from './sticker-rpc.js'
@@ -354,6 +354,23 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       socketWorker?.close()
     }
   }, 'mtproto-bridge.voice-calls')
+  // Only a send reaches UploadManager.complete(), and nothing calls remove() on
+  // the abandonment paths, so staged media, prepared sinks, and legacy part
+  // directories that a client walked away from are released here instead of
+  // accumulating for the life of the installation.
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void uploads.sweep(UPLOAD_ABANDONED_TTL_MS).then((result) => {
+        if (!result.staged && !result.prepared && !result.directories) return
+        bridgeLogger.info(
+          'released abandoned uploads staged=%d prepared=%d directories=%d',
+          result.staged, result.prepared, result.directories,
+        )
+      }).catch((error) => bridgeLogger.warn('upload sweep failed: %s', String(error)))
+    }, 10 * 60 * 1_000)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, 'mtproto-bridge.upload-sweep')
   const subscriptions = new PlatformSubscriptionManager(
     ctx.database,
     registry,
@@ -408,7 +425,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
   ctx.effect(() => unregisterRequestInbox, 'mtproto-bridge.request-inbox')
   platforms.onSessionChange((event, binding) => {
     if (event === 'deactivate') {
-      const key = `${binding.session.platformId} ${binding.session.platformSessionId}`
+      const key = `${binding.session.platformId}\u0000${binding.session.platformSessionId}`
       stickerRpcs.delete(key)
       reactionRpcs.delete(key)
       stickerProviders.releaseSession(binding.session.platformSessionId)

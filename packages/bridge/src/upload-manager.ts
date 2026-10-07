@@ -21,7 +21,10 @@ export interface UploadedFile {
 export interface StagedMedia {
   media: IMMediaInput
   upload: UploadedFile
+  /** Telegram `upload.file.mtime` and photo/document `date`, in seconds. */
   timestamp: number
+  /** Last stage or part accepted, in milliseconds, for abandoned-upload sweeps. */
+  updatedAt: number
 }
 
 interface PreparedUpload {
@@ -38,9 +41,26 @@ interface PreparedUpload {
   sha1: ReturnType<typeof createHash>
   file10MMd5: ReturnType<typeof createHash>
   file10MBytes: number
+  /** Last part accepted, so an abandoned stream can be told from a slow one. */
+  updatedAt: number
   tail: Promise<void>
   failed?: unknown
 }
+
+/** Result of one abandoned-upload sweep, for logging and tests. */
+export interface UploadSweepResult {
+  staged: number
+  prepared: number
+  directories: number
+}
+
+/**
+ * How long an upload may sit without progress before it is treated as
+ * abandoned. A client sends the media it staged within seconds; the generous
+ * hour only exists so a slow legacy part upload (whose directory mtime is
+ * refreshed by every part) is never cut off mid-transfer.
+ */
+export const UPLOAD_ABANDONED_TTL_MS = 60 * 60 * 1_000
 
 /** Telegram uploads: prepared native sinks stay in memory; legacy clients use disk-backed parts. */
 export class UploadManager {
@@ -116,7 +136,11 @@ export class UploadManager {
       native: true,
       cleanup: async () => {},
     }
-    const staged = { media, upload, timestamp: Date.now() }
+    // `timestamp` is the Telegram mtime in seconds; a prepared stage used to
+    // publish milliseconds here, which reached clients as a year-56000 date.
+    const staged: StagedMedia = {
+      media, upload, timestamp: Math.floor(Date.now() / 1000), updatedAt: Date.now(),
+    }
     this.stage(staged)
     return staged
   }
@@ -155,6 +179,7 @@ export class UploadManager {
       sha1: createHash('sha1'),
       file10MMd5: createHash('md5'),
       file10MBytes: 0,
+      updatedAt: Date.now(),
       tail: Promise.resolve(),
     }
     this._prepared.set(key, prepared)
@@ -171,7 +196,68 @@ export class UploadManager {
     await upload.cleanup()
   }
 
+  /**
+   * Release uploads nobody finished.
+   *
+   * Only a send reaches `complete()`, and `remove()` has no caller on the
+   * abandonment paths, so a client that stages media and never sends it leaves
+   * its `StagedMedia` entry behind, a prepared upload whose client disconnected
+   * keeps a sink plus up to `MAX_PREPARED_OUT_OF_ORDER_BYTES` of parts, and a
+   * legacy part upload that was abandoned leaves the directory `savePart()`
+   * wrote. Production had accumulated 920 MiB of those directories over two
+   * months before this sweep existed.
+   *
+   * A directory is kept while a surviving entry still owns it, and the ones
+   * without any owner are judged by their own mtime: a legacy upload in flight
+   * has no entry at all, but every accepted part refreshes that mtime.
+   */
+  async sweep(maxIdleMs: number, now = Date.now()): Promise<UploadSweepResult> {
+    if (!Number.isFinite(maxIdleMs) || maxIdleMs < 0) {
+      throw new RangeError('maxIdleMs must be a non-negative finite number')
+    }
+    const cutoff = now - maxIdleMs
+    let staged = 0
+    let prepared = 0
+    let directories = 0
+
+    for (const [key, entry] of [...this._staged]) {
+      if (entry.updatedAt >= cutoff) continue
+      this._staged.delete(key)
+      staged++
+    }
+    for (const [key, entry] of [...this._prepared]) {
+      if (entry.updatedAt >= cutoff) continue
+      this._prepared.delete(key)
+      try {
+        await entry.sink.abort(new Error('upload abandoned'))
+      } catch {
+        // An already-broken sink must not keep the entry alive.
+      }
+      prepared++
+    }
+
+    const liveDirectories = new Set(
+      [...this._staged.keys(), ...this._prepared.keys()].map((key) => {
+        const separator = key.indexOf('\u0000')
+        return this._directory(key.slice(0, separator), key.slice(separator + 1))
+      }),
+    )
+    for (const sessionDirectory of await readdir(this._root).catch(() => [] as string[])) {
+      const sessionPath = join(this._root, sessionDirectory)
+      for (const fileDirectory of await readdir(sessionPath).catch(() => [] as string[])) {
+        const directory = join(sessionPath, fileDirectory)
+        if (liveDirectories.has(directory)) continue
+        const info = await stat(directory).catch(() => undefined)
+        if (!info || info.mtimeMs >= cutoff) continue
+        await rm(directory, { recursive: true, force: true })
+        directories++
+      }
+    }
+    return { staged, prepared, directories }
+  }
+
   private async _savePreparedPart(prepared: PreparedUpload, part: number, bytes: Uint8Array): Promise<void> {
+    prepared.updatedAt = Date.now()
     const run = prepared.tail.then(async () => {
       if (prepared.failed) throw prepared.failed
       if (part < prepared.nextPart) return
