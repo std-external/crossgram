@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 import { expandTelegramStrippedThumbnail, type IMMedia } from '@mtproto-relay/bridge'
-import { QQMediaPreviewer, mediaPreviewKey } from './media-preview.js'
+import { QQMediaPreviewer, mediaPreviewKey, applyNativeImageLimits, MAX_INPUT_PIXELS } from './media-preview.js'
 import type { QQMediaLocator } from './protocol.js'
 
 function media(id = 'one', kind: IMMedia['kind'] = 'image'): IMMedia<QQMediaLocator> {
@@ -235,5 +235,26 @@ describe('QQMediaPreviewer video frames', () => {
     }, readFrame)
     expect(restored).toMatchObject({ width: 720, height: 1280, duration: 12 })
     expect(readFrame).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds the libvips caches and worker threads it shares with the host', () => {
+    applyNativeImageLimits()
+    const cache = sharp.cache()
+    expect({ memory: cache.memory.max, files: cache.files.max, items: cache.items.max })
+      .toEqual({ memory: 32, files: 0, items: 32 })
+    expect(sharp.concurrency()).toBe(1)
+    // The ceiling the previewer uses unless a caller lowers it.
+    expect(MAX_INPUT_PIXELS).toBe(16 * 1024 * 1024)
+  })
+
+  it('refuses a decode above the pixel ceiling instead of allocating it', async () => {
+    const previewer = new QQMediaPreviewer({ enabled: true, maxInputPixels: 100 })
+    const tiny = await png(8, 8)
+    await expect(previewer.prepare(media('ceiling-ok'), async function* () { yield tiny }))
+      .resolves.toMatchObject({ strippedThumbnail: expect.anything() })
+
+    const oversized = await png(40, 40)
+    await expect(previewer.prepare(media('ceiling-big'), async function* () { yield oversized }))
+      .rejects.toThrow(/pixel limit/i)
   })
 })

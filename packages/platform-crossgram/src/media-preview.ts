@@ -38,6 +38,11 @@ export function defineQQMediaPreviewModel(ctx: Context): void {
 export interface QQMediaPreviewOptions {
   enabled?: boolean
   concurrency?: number
+  /**
+   * Pixel ceiling for one decode. Defaults to `MAX_INPUT_PIXELS`; tests lower it
+   * to exercise the limit without generating a megapixel fixture.
+   */
+  maxInputPixels?: number
   database?: Database
   /** Clock used for the failed-extraction backoff; injectable for tests. */
   now?: () => number
@@ -57,10 +62,38 @@ interface InlinePreview {
 }
 
 const MAX_PREVIEW_SOURCE_BYTES = 64 * 1024 * 1024
-const MAX_INPUT_PIXELS = 64 * 1024 * 1024
+/**
+ * Pixel ceiling for one decode. The preview only ever needs a 40px JPEG, but
+ * libvips allocates the decoded raster before it resizes, so this is a direct
+ * limit on peak native memory: the previous 64 megapixels allowed a ~256 MiB
+ * RGBA allocation for a single oversized image on a host that runs nine other
+ * services and swaps. Sixteen megapixels still covers 4K video frames and every
+ * phone photo the platform carries, and an image above it only loses its own
+ * thumbnail — `scheduleInlinePreview` logs the failure and keeps the message.
+ */
+export const MAX_INPUT_PIXELS = 16 * 1024 * 1024
 const MEMORY_PREVIEW_CACHE_LIMIT = 4096
 const FAILED_PREVIEW_CACHE_LIMIT = 4096
 const FAILED_FRAME_RETRY_MS = 30 * 60 * 1000
+
+/**
+ * Bound libvips' own caches and worker threads for this process.
+ *
+ * Nothing configured them here, so the relay inherited libvips' defaults: a
+ * 50 MiB pixel-operation cache, up to 20 cached file loaders, and one worker
+ * thread per core. This module is imported statically, so the native addon and
+ * its caches live in the relay process whether or not previews are enabled.
+ * Previews are background work on a shared host, so 32 MiB, no file cache (the
+ * sources are streams and buffers, never reusable paths), and a single worker
+ * are the right trade. Exported so a test can assert the applied values without
+ * depending on another test file's global sharp state.
+ */
+export function applyNativeImageLimits(): void {
+  sharp.cache({ memory: 32, files: 0, items: 32 })
+  sharp.concurrency(1)
+}
+
+applyNativeImageLimits()
 
 /**
  * Generates Telegram's tiny photoStrippedSize payload in an isolated worker
@@ -71,6 +104,7 @@ const FAILED_FRAME_RETRY_MS = 30 * 60 * 1000
 export class QQMediaPreviewer {
   readonly enabled: boolean
   readonly concurrency: number
+  private readonly maxInputPixels: number
   private readonly active = new Map<string, Promise<InlinePreview>>()
   private readonly memory = new Map<string, InlinePreview>()
   private readonly failedFrames = new Map<string, number>()
@@ -81,6 +115,7 @@ export class QQMediaPreviewer {
   constructor(private readonly options: QQMediaPreviewOptions = {}) {
     this.enabled = options.enabled ?? false
     this.concurrency = Math.max(1, Math.min(8, Math.trunc(options.concurrency ?? 2)))
+    this.maxInputPixels = Math.max(1, Math.trunc(options.maxInputPixels ?? MAX_INPUT_PIXELS))
     this.now = options.now ?? Date.now
   }
 
@@ -130,7 +165,7 @@ export class QQMediaPreviewer {
     try {
       const preview = await this.open(key, async () => {
         const frame = await readFrame(await resolveUrl(signal), signal)
-        const metadata = await sharp(frame.bytes, { limitInputPixels: MAX_INPUT_PIXELS }).metadata()
+        const metadata = await sharp(frame.bytes, { limitInputPixels: this.maxInputPixels }).metadata()
         return {
           bytes: await this.create(singleChunk(frame.bytes), signal),
           width: positiveInteger(metadata.width),
@@ -185,7 +220,7 @@ export class QQMediaPreviewer {
   }
 
   private async create(source: AsyncIterable<Uint8Array>, signal?: AbortSignal): Promise<Uint8Array> {
-    const transformer = sharp({ limitInputPixels: MAX_INPUT_PIXELS, sequentialRead: true })
+    const transformer = sharp({ limitInputPixels: this.maxInputPixels, sequentialRead: true })
       .rotate()
       .resize({ width: 40, height: 40, fit: 'inside', withoutEnlargement: true })
       .jpeg({
