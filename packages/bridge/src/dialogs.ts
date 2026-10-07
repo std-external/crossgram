@@ -3666,6 +3666,60 @@ export class DialogRpc {
     )).pts
   }
 
+  /**
+   * Resolve a dialog preview message to its durable projection, persisting the
+   * message first when the store has never seen it.
+   *
+   * A dialog page is often the first place a client learns about a preview
+   * message. Before this ran, the only remaining source of an id for an
+   * unprojected preview was the process-local counter in `_messageId`, and that
+   * address is not the id the message receives when it is finally ingested: the
+   * client cached one identity while every later request resolved the other, and
+   * the abandoned entry stayed in `_tlToMessage`/`_messageOutgoingByTl` for the
+   * life of the device state. Ingesting here keeps the published preview address
+   * equal to the one `messages.getMessages` and later dialog pages resolve.
+   */
+  private async _projectDialogPreview(
+    platformPeerId: string,
+    conversation: IMConversation,
+    message: IMMessage,
+  ): Promise<MaterializedMessage[]> {
+    // Without a store there is no durable id to publish, so the caller keeps
+    // falling back to the process-local address.
+    if (!this._store) return []
+    const read = async (): Promise<MaterializedMessage[]> => {
+      const stored = await this._store!.findProjectedByPlatformId(
+        this._session.platformSessionId, platformPeerId, message.id,
+      )
+      return stored?.parts.map((part): MaterializedMessage => ({
+        source: stored.source,
+        tlId: part.tlMessageId,
+        ordinal: part.ordinal,
+        storedMessageId: part.messageId,
+        groupedId: part.groupedId ?? undefined,
+        media: stored.media.find((entry) => entry.id === part.mediaId),
+        mediaRows: stored.media,
+      })).sort((left, right) => right.tlId - left.tlId) ?? []
+    }
+    let projected = await read()
+    if (!projected.length) {
+      try {
+        await this._store.ingest(this._session, conversation, message)
+      } catch (error) {
+        // Keep the dialog list available; the caller falls back to the
+        // process-local address exactly as it did before this helper existed.
+        this._onTrace?.(
+          'dialog preview ingestion failed conversation=%s message=%s error=%s',
+          platformPeerId, message.id, error instanceof Error ? error.message : String(error),
+        )
+        return []
+      }
+      projected = await read()
+    }
+    for (const item of projected) this._rememberMessage(item)
+    return projected
+  }
+
   private async _materializeDialog(
     source: IMDialog,
     storedDraft?: StoredDraft,
@@ -3693,54 +3747,46 @@ export class DialogRpc {
           ]
         : []
     const chat = source.conversation.kind === 'direct' ? undefined : this._makeChat(source.conversation)
-    const unpersistedReadInboxMaxId = source.unreadCount > 0 && source.readInboxMaxMessage && !this._store
-      ? this._sourceMessageId(platformPeerId, source.readInboxMaxMessage)
-      : undefined
     let projected = source.lastMessage
       ? requestProjections.filter((item) =>
           item.source.id === source.lastMessage!.id || item.source.sourceIds?.includes(source.lastMessage!.id))
       : undefined
-    if (source.lastMessage && !projected?.length && this._store) {
-      const stored = await this._store.findProjectedByPlatformId(
-        this._session.platformSessionId, platformPeerId, source.lastMessage.id,
-      )
-      projected = stored?.parts.map((part): MaterializedMessage => ({
-        source: stored.source,
-        tlId: part.tlMessageId,
-        ordinal: part.ordinal,
-        storedMessageId: part.messageId,
-        groupedId: part.groupedId ?? undefined,
-        media: stored.media.find((entry) => entry.id === part.mediaId),
-        mediaRows: stored.media,
-      })).sort((left, right) => right.tlId - left.tlId)
-      for (const item of projected ?? []) this._rememberMessage(item)
+    if (source.lastMessage && !projected?.length) {
+      projected = await this._projectDialogPreview(platformPeerId, source.conversation, source.lastMessage)
     }
     const top = projected?.[0]
-    const topMessage = top?.tlId ?? (source.lastMessage ? this._sourceMessageId(platformPeerId, source.lastMessage) : 0)
+    // A store-backed dialog page must never anchor a peer to a process-local
+    // id. The client caches `topMessage` as the peer's preview address, and
+    // nothing resolves a counter value there — `messages.getMessages` answers
+    // messageEmpty for it, the next dialog page assigns the message its durable
+    // timestamp-bucketed id instead, and a restart loses it. Publish an empty
+    // preview and let the client load history, exactly as the merged-forward
+    // transcript dialogs do. A storeless process has no durable id space at
+    // all, so its process-local bootstrap id remains the only address it can
+    // offer and still resolves within that process.
+    // Evaluated only when no durable projection supplied `top`, so the common
+    // preloaded-preview path keeps its original cost.
+    const topMessage = top?.tlId ?? (source.lastMessage
+      ? this._sourceMessageId(source.lastMessage)
+        ?? this._storelessMessageId(platformPeerId, source.lastMessage)
+        ?? 0
+      : 0)
     let readInboxMaxId = source.unreadCount > 0 ? 0 : topMessage
     if (source.unreadCount > 0 && source.readInboxMaxMessage) {
       let readProjection = requestProjections.filter((item) =>
         item.source.id === source.readInboxMaxMessage!.id
         || item.source.sourceIds?.includes(source.readInboxMaxMessage!.id))
-      if (!readProjection.length && this._store) {
-        const stored = await this._store.findProjectedByPlatformId(
-          this._session.platformSessionId, platformPeerId, source.readInboxMaxMessage.id,
+      if (!readProjection.length) {
+        readProjection = await this._projectDialogPreview(
+          platformPeerId, source.conversation, source.readInboxMaxMessage,
         )
-        readProjection = stored?.parts.map((part): MaterializedMessage => ({
-          source: stored.source,
-          tlId: part.tlMessageId,
-          ordinal: part.ordinal,
-          storedMessageId: part.messageId,
-          groupedId: part.groupedId ?? undefined,
-          media: stored.media.find((entry) => entry.id === part.mediaId),
-          mediaRows: stored.media,
-        })) ?? []
       }
       readInboxMaxId = readProjection.reduce((maximum, item) => Math.max(maximum, item.tlId), 0)
-        || unpersistedReadInboxMaxId
-        || this._sourceMessageId(platformPeerId, source.readInboxMaxMessage)
+        || (this._sourceMessageId(source.readInboxMaxMessage)
+          ?? this._storelessMessageId(platformPeerId, source.readInboxMaxMessage)
+          ?? 0)
     }
-    const topItem = top ?? (source.lastMessage
+    const topItem = top ?? (source.lastMessage && topMessage > 0
       ? { source: source.lastMessage, tlId: topMessage, ordinal: 0 }
       : undefined)
     const createdUnreadMentions = topItem
@@ -5680,9 +5726,26 @@ export class DialogRpc {
     return id
   }
 
-  private _sourceMessageId(peerId: string, message: IMMessage): number {
+  /**
+   * Process-local bootstrap id for a preview message, only for a process that
+   * has no durable id space. A store-backed process returns `undefined`: the
+   * message receives a timestamp-bucketed id when it is ingested, so a counter
+   * value would anchor the client to an address no later request resolves.
+   */
+  private _storelessMessageId(peerId: string, message: IMMessage): number | undefined {
+    return this._store ? undefined : this._messageId(peerId, message.id)
+  }
+
+  /**
+   * Telegram-native id of a preview message, remembered so a later
+   * `messages.readHistory`/`getMessages` can map the id back.
+   *
+   * Returns `undefined` when the message only carries a platform id, which the
+   * caller answers with an empty preview instead of a process-local value.
+   */
+  private _sourceMessageId(message: IMMessage): number | undefined {
     const native = telegramMessageId(message)
-    if (native === undefined) return this._messageId(peerId, message.id)
+    if (native === undefined) return undefined
     this._rememberMessage({ source: message, tlId: native, ordinal: 0 })
     return native
   }

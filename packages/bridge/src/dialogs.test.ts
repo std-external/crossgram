@@ -173,6 +173,10 @@ describe('DialogRpc', () => {
       ['alice', { id: 10, platformId: session.platformId, platformUserId: 'alice', firstName: 'Alice', lastName: null, username: null, avatar: null, metadata: {} }],
       ['bob', { id: 11, platformId: session.platformId, platformUserId: 'bob', firstName: 'Bob', lastName: null, username: null, avatar: null, metadata: {} }],
     ])
+    // The dialog preview names a message the store has never projected, so the
+    // RPC must persist it instead of publishing a process-local counter id.
+    const durablePreviewId = 0x40000000
+    let ingestedPreview: Array<{ tlMessageId: number, ordinal: number }> | undefined
     const store: any = {
       getUser: vi.fn(async (_platformId: string, id: string) => id === session.userId ? {
         id: 1, platformId: session.platformId, platformUserId: session.userId,
@@ -185,7 +189,17 @@ describe('DialogRpc', () => {
       readProjectedByPlatformIds: vi.fn(async () => [{
         source: projected, parts: [{ tlMessageId: 1, ordinal: 0 }], media: [],
       }]),
-      findProjectedByPlatformId: vi.fn(async () => undefined),
+      findProjectedByPlatformId: vi.fn(async (_platformSessionId: string, _peerId: string, messageId: string) =>
+        messageId === upstream.id && ingestedPreview
+          ? { source: upstream, parts: ingestedPreview, media: [] }
+          : undefined),
+      ingest: vi.fn(async () => {
+        ingestedPreview = [{ tlMessageId: durablePreviewId, ordinal: 0 }]
+        return {
+          message: { id: 1 }, created: true, changed: true,
+          projection: ingestedPreview, addedTlMessageIds: [durablePreviewId], removedTlMessageIds: [],
+        }
+      }),
       countUnreadMentionsMany: vi.fn(async () => new Map()),
       countUnreadMentions: vi.fn(async () => 0),
       getChannelUpdateState: vi.fn(async () => ({ pts: 0 })),
@@ -200,8 +214,11 @@ describe('DialogRpc', () => {
     const rpc = new DialogRpc(platform, session, store)
 
     await expect(rpc.getDialogs(getDialogsRequest())).resolves.toMatchObject({
-      dialogs: [{ topMessage: 2 }],
+      dialogs: [{ topMessage: durablePreviewId }],
     })
+    expect(store.ingest).toHaveBeenCalledWith(
+      session, conversation, expect.objectContaining({ id: upstream.id }),
+    )
     expect(store.readUsers).toHaveBeenCalledWith(session.platformId, expect.arrayContaining(['bob']))
   })
 
