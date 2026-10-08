@@ -1109,7 +1109,9 @@ export class QQNTPlatform implements IMPlatform<QQMediaLocator> {
     let cursor: string | undefined
     do {
       const page = await this.getConversationMembers(session, conversation, { cursor, limit: 500 })
-      const found = page.members.find((member) => member.user.id === userId)
+      // Match the numeric QQ account (username) too: Satori clients address
+      // members by QQ number after the exporter switched event IDs to it.
+      const found = page.members.find((member) => member.user.id === userId || member.user.username === userId)
       if (found) return found
       cursor = page.nextCursor
     } while (cursor)

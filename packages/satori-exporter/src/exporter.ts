@@ -63,7 +63,8 @@ export class SatoriExporter {
     if (!this._bot) this._bot = new SatoriExportBot(
       this._ctx, this, ++this._generation, this._config.platform ?? platform.platformKind ?? session.platformId,
     )
-    this._bot.user = { id: session.userId, name: session.userId }
+    const selfId = typeof session.metadata.qq === 'string' && session.metadata.qq ? session.metadata.qq : session.userId
+    this._bot.user = { id: selfId, name: selfId }
     this._bot.online()
   }
 
@@ -815,7 +816,7 @@ function textElements(part: Extract<IMMessagePart, { type: 'text' }>): h[] {
     if (entity.offset < offset || entity.offset > part.text.length) continue
     if (entity.offset > offset) output.push(h.text(part.text.slice(offset, entity.offset)))
     const value = part.text.slice(entity.offset, entity.offset + entity.length)
-    if (entity.type === 'mention') output.push(h.at(entity.userId, { name: value.replace(/^@/u, '') }))
+    if (entity.type === 'mention') output.push(h.at(entity.numericId ?? entity.userId, { name: value.replace(/^@/u, '') }))
     else if (entity.type === 'custom-emoji') output.push(h.emoji(entity.definition.key, { name: value }))
     else output.push(h.text(value))
     offset = entity.offset + entity.length
@@ -842,9 +843,12 @@ function satoriGuild(conversation: IMConversation): Universal.Guild {
   return { id: conversation.spaceId ?? conversation.id, name: conversation.title }
 }
 
+/** Prefer the numeric QQ account (user.metadata.qq) over the opaque NT UID. */
 function satoriUser(id: string, user: IMMessage['sender'], avatar?: string): Universal.User {
-  const name = user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || id : id
-  return { id, name, nick: name, ...(avatar ? { avatar } : {}), ...(user?.metadata?.bot === true ? { isBot: true } : {}) }
+  const numericId = typeof user?.metadata?.qq === 'string' && user.metadata.qq ? user.metadata.qq : undefined
+  const userId = numericId ?? id
+  const name = user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || userId : userId
+  return { id: userId, name, nick: name, ...(avatar ? { avatar } : {}), ...(user?.metadata?.bot === true ? { isBot: true } : {}) }
 }
 
 /** System messages whose only sender is the platform placeholder get an explicit label. */

@@ -2695,6 +2695,21 @@ describe('QQNTPlatform mapping', () => {
     })
   })
 
+  it('resolves a conversation member by its numeric QQ account', async () => {
+    const platform = new QQNTPlatform()
+    platform.client.getMembers = vi.fn(async () => ({
+      members: [{
+        user: { id: 'u_opaque', numericId: '1715311957', name: 'Profile Name' },
+        role: 'member' as const,
+      }],
+      total: 1,
+    }))
+
+    await expect(platform.getConversationMember(
+      session, { id: 'group' }, '1715311957',
+    )).resolves.toMatchObject({ user: { id: 'u_opaque', username: '1715311957' } })
+  })
+
   it('does not scan the full member list when a self-role probe arrives before group metadata', async () => {
     const platform = new QQNTPlatform()
     platform.client.getMembers = vi.fn(async () => ({ members: [], total: 0 }))

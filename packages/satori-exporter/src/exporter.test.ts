@@ -233,6 +233,55 @@ describe('SatoriExporter', () => {
     expect(platform.resolveMediaUrl).toHaveBeenCalledWith(session, avatar)
   })
 
+  it('exports senders and mentions under their numeric QQ account', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+
+    exporter.handleMessage(session, group, {
+      ...message('numeric', group.id),
+      sender: { id: 'u_alice_ntid', firstName: 'Alice', username: '10001', metadata: { qq: '10001' } },
+      content: {
+        parts: [{
+          type: 'text', text: '@Alice hi',
+          entities: [{ type: 'mention', offset: 0, length: 6, userId: 'u_alice_ntid', numericId: '10001' }],
+        }],
+      },
+    }, { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    expect(events[0]!.event.user).toMatchObject({ id: '10001', name: 'Alice' })
+    expect(events[0]!.author).toMatchObject({ id: '10001', userId: '10001' })
+    expect(events[0]!.event.message?.content).toContain('<at id="10001"')
+  })
+
+  it('keeps the opaque sender ID when no numeric QQ account is known', async () => {
+    const { ctx, exporter } = await createExporter()
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+
+    exporter.handleMessage(session, group, message('opaque', group.id), { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    expect(events[0]!.event.user).toMatchObject({ id: 'alice', name: 'Alice' })
+  })
+
+  it('identifies the bot by its numeric QQ account', async () => {
+    const numericSession: PlatformSession = { ...session, metadata: { qq: '10000' } }
+    const { ctx, exporter } = await createExporter({}, numericSession)
+    const events: Session[] = []
+    ctx.on('message-created', (event) => { events.push(event) })
+    const group: IMConversation = { id: '42', kind: 'group', title: 'QQ Group' }
+
+    exporter.handleMessage(numericSession, group, message('m', group.id), { created: true })
+
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    const bot = (exporter as unknown as { _bot: { user: Universal.User } })._bot
+    expect(bot.user).toEqual({ id: '10000', name: '10000' })
+  })
+
   it('exports the bridge robot flag as the Satori user isBot field', async () => {
     const { ctx, exporter } = await createExporter()
     const events: Session[] = []
