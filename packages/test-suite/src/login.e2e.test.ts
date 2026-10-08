@@ -17,8 +17,9 @@ import Long from 'long'
 import Bot from 'node-telegram-bot-api'
 import { Context } from 'cordis'
 import {
-  AbridgedPacketCodec, CURRENT_API_LAYER, generateRsaKeyPair, type MtprotoDebugEvent,
+  AbridgedPacketCodec, CROSSGRAM_API_SCHEMA, CURRENT_API_LAYER, generateRsaKeyPair, type MtprotoDebugEvent,
 } from '@mtproto-relay/mtproto'
+import { generateWriterCodeForTlEntries, parseTlToEntries } from '@mtcute/tl-utils'
 import * as bridge from '@mtproto-relay/bridge'
 import * as staticPlatformPlugin from '@mtproto-relay/platform-static'
 import * as telegramBotApi from '@mtproto-relay/telegram-bot-api'
@@ -1337,6 +1338,30 @@ describe('bridge login e2e', () => {
         const response = await callRpc(client, key, sid, request, 6 + index * 2)
         expect(response).toMatchObject(expected as object)
         expect(response?._).not.toBe('mt_rpc_error')
+      }
+
+      // The Android fast-upload patch probes with the V2/V3 constructors
+      // (0xf75adc0f / 0xf75adc10) before uploading any part. These must route
+      // to the bridge and answer Bool, never METHOD_NOT_IMPLEMENTED — the
+      // client treats that error as a lost response and the upload stalls at 0%.
+      const crossgramGenerated = new Function(`${generateWriterCodeForTlEntries(
+        parseTlToEntries(CROSSGRAM_API_SCHEMA),
+        { variableName: 'm', includePrelude: true, includeStaticSizes: true },
+      )};return m`)() as TlWriterMap
+      const crossgramWriters = Object.assign(Object.create(null), __tlWriterMap, crossgramGenerated) as TlWriterMap
+      const crossgramMaps: ClientMaps = {
+        layer: CURRENT_API_LAYER, write: crossgramWriters, read: __tlReaderMap,
+      }
+      let sub = 6 + calls.length * 2
+      for (const probe of ['crossgram.prepareMediaUploadV2', 'crossgram.prepareMediaUploadV3'] as const) {
+        expect(await callRpc(client, key, sid, {
+          _: probe,
+          peer: self, fileId: Long.fromNumber(9_005), name: 'probe.jpg', size: Long.fromNumber(4),
+          kind: 'image', mimeType: 'image/jpeg',
+          md5: new Uint8Array(16), sha1: new Uint8Array(20), sha1Checkpoints: new Uint8Array(0),
+          file10mMd5: new Uint8Array(16), width: 0, height: 0, duration: 0,
+          thumbnail: new Uint8Array(0), thumbnailWidth: 0, thumbnailHeight: 0,
+        }, sub += 2, crossgramMaps)).toEqual({ _: 'boolFalse' })
       }
     } finally {
       client?.close()

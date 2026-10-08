@@ -1083,6 +1083,14 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
     (await requireBridgeSession(rpc)).dialogs.prepareMediaUpload(
       req as unknown as import('./dialogs.js').PrepareMediaUploadRequest,
     ))
+  rpc.register('crossgram.prepareMediaUploadV2', async (rpc, req) =>
+    (await requireBridgeSession(rpc)).dialogs.prepareMediaUploadV2(
+      req as unknown as import('./dialogs.js').PrepareMediaUploadV2Request,
+    ))
+  rpc.register('crossgram.prepareMediaUploadV3', async (rpc, req) =>
+    (await requireBridgeSession(rpc)).dialogs.prepareMediaUploadV3(
+      req as unknown as import('./dialogs.js').PrepareMediaUploadV3Request,
+    ))
   rpc.register('crossgram.getFeatures', async (rpc, req) =>
     (await requireBridgeSession(rpc)).dialogs.getFeatures(
       req as unknown as import('./dialogs.js').GetFeaturesRequest,

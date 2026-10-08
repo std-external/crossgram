@@ -2,7 +2,7 @@
 # Manual changes might be lost - proceed with caution!
 
 __metadata:
-  version: 10
+  version: 9
   cacheKey: 10c0
 
 "@babel/code-frame@npm:^7.29.0, @babel/code-frame@npm:^7.29.7":
@@ -2205,6 +2205,7 @@ __metadata:
     "@mtcute/core": "npm:^0.32.1"
     "@mtcute/node": "npm:^0.32.1"
     "@mtcute/tl-runtime": "npm:^0.32.0"
+    "@mtcute/tl-utils": "npm:^0.32.0"
     "@mtproto-relay/bridge": "workspace:*"
     "@mtproto-relay/merged-forward": "workspace:*"
     "@mtproto-relay/mtproto": "workspace:*"

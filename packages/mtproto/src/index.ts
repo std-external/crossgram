@@ -21,6 +21,7 @@ export {
   getHistoricalApiLayerReaderMap,
   resolveApiSchemaLayer,
 } from './rpc/api-layer.js'
+export { CROSSGRAM_API_SCHEMA } from './rpc/server-reader-map.js'
 export { RpcError, RpcErrors, toRpcError, isRpcError } from './rpc/errors.js'
 
 export { ServerConnection } from './transport/server-connection.js'
