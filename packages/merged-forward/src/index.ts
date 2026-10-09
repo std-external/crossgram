@@ -167,6 +167,10 @@ const MAX_NESTED_ADDRESSES = 4096
  * holds can be rebuilt from MessageStore after a restart.  Bundles without a
  * durable address (unstored sources, paths too long to encode) keep a
  * process-local id and live only as long as the registry.
+ *
+ * Inside a transcript, message ids are allocated in the transcript's
+ * chronological order (`transcriptMessageId`), because clients page history with
+ * those ids as cursors and order same-timestamp messages by them.
  */
 export class MergedForwardProjection {
   private readonly _records = new Map<string, Map<number, BundleRecord>>()
@@ -348,8 +352,10 @@ export class MergedForwardProjection {
         const preview = snapshotPreview(snapshots)
         if (preview) record.bundle = { ...record.bundle, preview }
       }
-      const first = firstSnapshot(part.bundle, snapshots)
-      const target = first ? bundleMessageId(part.bundle, first, 0) : undefined
+      const first = firstSnapshot(snapshots)
+      // The link anchors at the transcript's first message, so clients open the
+      // archive at its beginning instead of its newest record.
+      const target = first ? transcriptMessageId(0, 0) : undefined
       if (target) targets.set(part.bundle.id, target)
       links.set(part.bundle.id, this.makeLink(
         record,
@@ -615,9 +621,10 @@ export class MergedForwardProjection {
     // only link to durable transcripts once their address is known.
     this.registerNested(record, snapshots)
     const peer = { _: 'peerChat' as const, chatId: record.chatId }
+    const ranks = transcriptRanks(snapshots)
     const replyIds = new Map(snapshots.map((snapshot) => [
       snapshot.id,
-      bundleMessageId(record.bundle, snapshot, 0),
+      transcriptMessageId(ranks.get(snapshot.id) ?? 0, 0),
     ]))
     const messages: tl.TypeMessage[] = []
     const chats: tl.TypeChat[] = [this.makeChat(record, snapshots, await this.loadAvatar(state, record))]
@@ -632,7 +639,7 @@ export class MergedForwardProjection {
         stickers: state.stickers,
         source: snapshot,
         target: { peer, title: record.bundle.title },
-        messageId: (ordinal) => bundleMessageId(record.bundle, snapshot, ordinal),
+        messageId: (ordinal) => transcriptMessageId(ranks.get(snapshot.id) ?? 0, ordinal),
         mediaId: (partIndex) => stableId(
           `merged-forward-media:${record.bundle.id}:${snapshot.id}:${partIndex}`,
         ),
@@ -645,6 +652,10 @@ export class MergedForwardProjection {
       messages.push(...rendered.messages)
       chats.push(...rendered.chats)
     }
+    // Transcripts read newest first.  Messages that share one timestamp — QQ
+    // only records whole seconds — fall back to the id, which is allocated in
+    // archive order, so the tiebreak shows the later message above the earlier
+    // one, exactly like the archive itself.
     messages.sort((left, right) => messageDate(right) - messageDate(left) || right.id - left.id)
     return {
       messages,
@@ -783,11 +794,11 @@ async function routeMergedForwardRpc(
     const history = request as tl.messages.RawGetHistoryRequest
     // A client that still carries a deep link generated before the relay
     // anchored links at the first message has no way to learn the transcript
-    // order from the link, so it asks for the beginning explicitly.  Synthetic
-    // message ids are hashes and never equal 1, so the sentinel cannot collide
-    // with a real message of the bundle.
+    // order from the link, so it asks for the beginning explicitly.  Transcript
+    // message ids start at `TRANSCRIPT_MESSAGE_ID_BASE`, so the sentinel cannot
+    // collide with a real message of the bundle.
     const page = history.offsetId === kFirstMessageOffsetId
-      ? firstPage(bundle.messages, history.limit)
+      ? firstPage(selectWithinBounds(bundle.messages, history), history.limit)
       : selectHistory(bundle.messages, history)
     return {
       _: 'messages.messagesSlice', count: bundle.messages.length,
@@ -903,20 +914,12 @@ function transcriptDialog(chatId: number): tl.RawDialog {
  * Picks the message a merged-forward deep link anchors to.
  *
  * Native Telegram forwards link to the first message of the transcript, so
- * opening the link shows the bundle from its beginning.  The picker mirrors
- * the projection order of the bundle (oldest first, ties by projected message
- * id) so the anchor is exactly the message clients display at the top.
+ * opening the link shows the bundle from its beginning.
  */
 function firstSnapshot(
-  bundle: IMMessageBundle,
   snapshots: readonly IMMessageSnapshot[],
 ): IMMessageSnapshot | undefined {
-  return snapshots.map((snapshot, index) => ({ snapshot, index }))
-    .sort((left, right) =>
-      left.snapshot.timestamp - right.snapshot.timestamp
-      || bundleMessageId(bundle, left.snapshot, 0) - bundleMessageId(bundle, right.snapshot, 0)
-      || left.index - right.index)[0]
-    ?.snapshot
+  return chronologicalSnapshots(snapshots)[0]
 }
 
 /**
@@ -958,8 +961,52 @@ function bundleChatId(bundle: IMMessageBundle): number {
   return stableId(`merged-forward-chat:${bundle.id}`)
 }
 
-function bundleMessageId(bundle: IMMessageBundle, snapshot: IMMessageSnapshot, ordinal: number): number {
-  return stableId(`merged-forward-message:${bundle.id}:${snapshot.id}:${ordinal}`)
+/**
+ * First id a transcript hands to a message.  Telegram clients use offset id 1
+ * as the "beginning of the history" sentinel, so transcript ids start above
+ * it and can never be mistaken for it.
+ */
+const TRANSCRIPT_MESSAGE_ID_BASE = 1000
+
+/** Ids reserved per archived message, one for each part it renders. */
+const TRANSCRIPT_MESSAGE_ID_STRIDE = 1000
+
+/**
+ * Telegram message id of one rendered part of a transcript.
+ *
+ * Clients page history by message *id*: `offset_id`, `max_id` and `min_id`
+ * are cursors, and a page has to be exactly the slice of the transcript those
+ * cursors select.  Ids therefore grow with the transcript's chronological
+ * order.  A hash cannot do that: every cursor would land on an arbitrary
+ * subset of the transcript, and the client's own tiebreaker for messages that
+ * share a timestamp — QQ timestamps only have second resolution — would order
+ * them randomly instead of the way the archive stores them.
+ *
+ * `rank * stride` leaves every rendered part of one archived message its own
+ * id.  A QQ message renders at most a handful of parts, far below the stride.
+ */
+export function transcriptMessageId(rank: number, ordinal: number): number {
+  return TRANSCRIPT_MESSAGE_ID_BASE + rank * TRANSCRIPT_MESSAGE_ID_STRIDE + ordinal
+}
+
+/**
+ * Chronological order of a transcript's archived messages.
+ *
+ * QQ returns a merged forward in the order it stored the records, which is the
+ * order the sender produced them; the timestamp is second-resolution, so it
+ * only breaks ties between records that arrived out of order.
+ */
+function chronologicalSnapshots(snapshots: readonly IMMessageSnapshot[]): IMMessageSnapshot[] {
+  return snapshots
+    .map((snapshot, index) => ({ snapshot, index }))
+    .sort((left, right) =>
+      left.snapshot.timestamp - right.snapshot.timestamp || left.index - right.index)
+    .map((entry) => entry.snapshot)
+}
+
+/** Chronological rank of every archived message of one transcript. */
+function transcriptRanks(snapshots: readonly IMMessageSnapshot[]): Map<string, number> {
+  return new Map(chronologicalSnapshots(snapshots).map((snapshot, rank) => [snapshot.id, rank]))
 }
 
 function bundleUserId(state: BridgeSessionState, platformUserId: string): number {
@@ -1035,16 +1082,50 @@ function selectHistory(
   messages: readonly tl.TypeMessage[],
   request: tl.messages.RawGetHistoryRequest,
 ): tl.TypeMessage[] {
+  const filtered = selectWithinBounds(messages, request)
+  const start = pageStart(filtered, request)
+  return filtered.slice(start, start + Math.max(0, request.limit))
+}
+
+/**
+ * Messages a history request admits: `maxId` and `minId` bound the transcript
+ * by id, exactly as they bound an ordinary chat.
+ */
+function selectWithinBounds(
+  messages: readonly tl.TypeMessage[],
+  request: tl.messages.RawGetHistoryRequest,
+): tl.TypeMessage[] {
   let filtered = [...messages]
   if (request.maxId > 0) filtered = filtered.filter((message) => message.id < request.maxId)
   if (request.minId > 0) filtered = filtered.filter((message) => message.id > request.minId)
+  return filtered
+}
+
+/**
+ * Where a history page starts inside a newest-first transcript.
+ *
+ * Telegram treats `offsetId` as an exclusive cursor and `addOffset` as a shift
+ * of the window: zero loads the messages directly below the cursor, a negative
+ * offset moves the window toward newer messages — which is how clients load
+ * the newest page (`offsetId = newest + 1`, `addOffset = -limit`), open a deep
+ * link (`addOffset = -limit / 2`, so the anchor itself is in the page) or walk
+ * forward from a gap in their local history.  A cursor below every message
+ * starts past the oldest one, so a negative offset there returns the oldest
+ * page; a window shifted above the newest message is clamped to it.
+ */
+function pageStart(
+  filtered: readonly tl.TypeMessage[],
+  request: tl.messages.RawGetHistoryRequest,
+): number {
   let start = 0
   if (request.offsetId > 0) {
-    const anchor = filtered.findIndex((message) => message.id === request.offsetId)
-    start = anchor < 0 ? 0 : anchor + 1
+    // The cursor is exclusive: the page begins at the first message below it,
+    // which for an id between two messages is their boundary — never a page
+    // that silently restarts at the newest message.
+    const below = filtered.findIndex((message) => message.id < request.offsetId)
+    start = below < 0 ? filtered.length : below
   }
-  start = Math.max(0, start + request.addOffset)
-  return filtered.slice(start, start + Math.max(0, request.limit))
+  return Math.max(0, start + request.addOffset)
 }
 
 function inputMessageId(input: tl.TypeInputMessage): number {

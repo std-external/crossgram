@@ -171,8 +171,9 @@ describe('merged-forward projection and RPC e2e', () => {
     const targetId = Number(new URL(entity.url).pathname.split('/').at(-1))
     expect(entity.url).toBe(`https://t.me/bridgebundle_${chatId}/${targetId}`)
     // The link opens the transcript from its beginning: the anchor is the
-    // oldest inner message, never the newest one.
-    expect(targetId).toBe(stableId(`merged-forward-message:${bundle.id}:inner-first:0`))
+    // oldest inner message, never the newest one.  Message ids are allocated in
+    // chronological order, so the first message owns the first id.
+    expect(targetId).toBe(1000)
     expect(projectedOuter.media).toMatchObject({
       _: 'messageMediaWebPage',
       webpage: { url: `https://t.me/bridgebundle_${chatId}/${targetId}` },

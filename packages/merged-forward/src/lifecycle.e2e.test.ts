@@ -85,7 +85,7 @@ describe('merged-forward Cordis lifecycle e2e', () => {
       }))
 
       const chatId = stableId(`merged-forward-chat:${bundle.id}`)
-      const targetId = stableId(`merged-forward-message:${bundle.id}:inner-message:0`)
+      const targetId = 1000
       expect(input.draft.source.content.parts[0]).toMatchObject({
         type: 'text',
         entities: [{ type: 'text-link', url: `https://t.me/bridgebundle_${chatId}/${targetId}` }],

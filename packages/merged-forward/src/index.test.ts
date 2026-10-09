@@ -6,7 +6,11 @@ import {
   type MessageProjectionInput,
   type PlatformSession,
 } from '@mtproto-relay/bridge'
-import { makeMergedForwardProvider, snapshotPreview } from './index.js'
+import {
+  makeMergedForwardProvider,
+  snapshotPreview,
+  transcriptMessageId,
+} from './index.js'
 
 const session: PlatformSession = {
   platformId: 'test', platformSessionId: 'session-1', userId: 'self',
@@ -107,9 +111,9 @@ describe('merged-forward projection', () => {
     }))
 
     const chatId = stableId(`merged-forward-chat:${bundle.id}`)
-    const firstId = stableId(`merged-forward-message:${bundle.id}:first:0`)
-    const newestId = stableId(`merged-forward-message:${bundle.id}:latest:0`)
-    expect(firstId).not.toBe(newestId)
+    // Ids follow the transcript's chronological order, so the link anchors at
+    // the oldest archived message and that message owns the first id.
+    const firstId = 1000
     expect(value.draft.source.content.parts[0]).toMatchObject({
       type: 'text',
       entities: [{ type: 'text-link', url: `https://t.me/bridgebundle_${chatId}/${firstId}` }],
@@ -145,7 +149,7 @@ describe('merged-forward projection', () => {
     const [one, two] = await Promise.all(pending)
 
     const chatId = stableId(`merged-forward-chat:${bundle.id}`)
-    const messageId = stableId(`merged-forward-message:${bundle.id}:latest:0`)
+    const messageId = 1000
     expect(load).toHaveBeenCalledOnce()
     for (const [result, value] of [[one, first], [two, second]] as const) {
       expect(value.draft.source.content.parts[0]).toMatchObject({
@@ -201,5 +205,20 @@ describe('merged-forward projection', () => {
     expect(snapshotPreview([{
       id: 'empty', senderId: 'x', timestamp: 1, content: { parts: [{ type: 'text', text: '  ' }] },
     }])).toBeUndefined()
+  })
+
+  it('allocates transcript message ids in chronological order above the start sentinel', () => {
+    // Clients use these ids as history cursors (`offset_id`, `max_id`,
+    // `min_id`) and as the tiebreaker between messages that share a QQ
+    // timestamp, so they must grow with the transcript, stay dense enough for
+    // every rendered part of one message and never reach offset id 1.
+    expect(transcriptMessageId(0, 0)).toBe(1000)
+    expect(transcriptMessageId(0, 1)).toBe(1001)
+    expect(transcriptMessageId(1, 0)).toBe(2000)
+    expect(transcriptMessageId(9, 3)).toBe(10003)
+    const ids = Array.from({ length: 500 }, (_, rank) => transcriptMessageId(rank, 0))
+    expect(ids).toEqual([...ids].sort((left, right) => left - right))
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids[0]).toBeGreaterThan(1)
   })
 })

@@ -4015,13 +4015,19 @@ describe('bridge login e2e', () => {
         message: { ...merged, id: 'merged-live', timestamp: merged.timestamp + 1 },
       })
       const livePreview = await readPush(client, key)
+      // The live message is its own stored row, so it carries its own copy of
+      // the merged forward: the transcript keeps the durable chat id of the
+      // message it belongs to, which is not the one the first copy got.
+      const liveUrl = livePreview.updates[0].message.entities[0].url as string
+      const liveChatId = Number(/bridgebundle_(\d+)\//.exec(liveUrl)![1])
+      expect(liveChatId).not.toBe(outerChat.id)
       expect(livePreview).toMatchObject({
         _: 'updates',
         updates: [{ message: {
           _: 'message', message: '查看聊天记录',
-          entities: [{ _: 'messageEntityTextUrl', url: expect.stringMatching(outerUrl) }],
+          entities: [{ _: 'messageEntityTextUrl', url: liveUrl }],
         } }],
-        chats: [{ _: 'channel', title: parent.title }, { _: 'chat', id: outerChat.id }],
+        chats: [{ _: 'channel', title: parent.title }, { _: 'chat', id: liveChatId }],
       })
 
       client.close()
@@ -4098,7 +4104,10 @@ describe('bridge login e2e', () => {
           description: innerBundle.preview, url: expect.stringMatching(innerUrl),
         } },
       })
-      expect(bundleLoads).toEqual(['outer', 'inner'])
+      // One load per distinct source message plus the nested archive: the live
+      // message carries its own copy of the same merged forward, and a
+      // transcript is addressed by the stored row it came from.
+      expect(bundleLoads).toEqual(['outer', 'outer', 'inner'])
       // The deep link opens the transcript from its first message, so a
       // desktop client that loads history around the anchor must receive the
       // anchor itself with the rest of the bundle below it.
