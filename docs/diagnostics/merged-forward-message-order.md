@@ -90,14 +90,30 @@ has the id `1000`.  A client that cached message content from an older relay
 keeps a stale anchor, which is what the desktop patch's sentinel request
 (`offset_id = 1`) answers.
 
+## Retiring the previous address scheme
+
+Clients store the messages they fetch, so a transcript a client already opened
+still holds the pages it received under the old hash ids.  Reusing the same
+transcript chat id would show those stored messages *next to* the new pages,
+which is the same "wrong order" complaint in a new shape.  The transcript chat
+id therefore counts from `2^32` now instead of `2^31`: the previous scheme's
+largest id was `2^31` plus the largest message row at the time (~3.6 billion
+for production's ~1.4M rows), so every id it handed out lies below the new base
+and decodes to nothing — the stale link falls through to the ordinary username
+route, and the client builds one fresh transcript view.  The new range still
+holds ~970 million rows below the 999999999999 bound TDLib enforces.
+
 ## Tests
 
 - `packages/merged-forward/src/history-page.e2e.test.ts` drives the real RPC
   route with an eight-record archive (two records per second, one of them a
   nested merged forward) and asserts the ids, the same-second order, the
   `max_id`/`min_id` windows, the newest-page refresh, the deep-link window, the
-  sentinel and the nested transcript.  Against the hashed ids it fails with
-  `m6, m7` instead of `m7, m6` and hash ids in the page.
+  sentinel, the nested transcript and that a retired address falls through to
+  the ordinary username route.  Against the hashed ids it fails with `m6, m7`
+  instead of `m7, m6` and hash ids in the page.
 - `packages/merged-forward/src/index.test.ts` keeps the anchor and id contract.
+- `packages/merged-forward/src/address.test.ts` keeps every id the previous
+  address scheme could have produced out of the decoder.
 - `packages/test-suite/src/login.e2e.test.ts` covers the live push path, whose
   transcript belongs to the pushed message's own stored row.

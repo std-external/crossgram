@@ -243,5 +243,23 @@ describe('merged-forward transcript history pages', () => {
       .toEqual([3000, 2000, 1000])
     expect(nestedPage.messages.map((message) => message._ === 'message' ? message.message : ''))
       .toEqual(['n2', 'n1', 'n0'])
+
+    // A link cached under the address scheme that preceded ordered message ids
+    // must not resolve: the client would otherwise reach a transcript and mix
+    // it with the pages it already stored under unordered ids.  It falls
+    // through to the ordinary username route instead.
+    const [storedOuter] = await ctx.database.get('mtproto_im_message', {
+      primaryPlatformMessageId: outerMessage.id,
+    })
+    const retiredChatId = 2 ** 31 + storedOuter!.id * 1024
+    const fallback: tl.RpcMethod[] = []
+    ctx.mtproto.register('contacts.resolveUsername', async (_rpc, request) => {
+      fallback.push(request)
+      return { _: 'contacts.resolvedPeer', peer: { _: 'peerUser', userId: 1 }, chats: [], users: [] }
+    })
+    await ctx.mtproto.dispatch(rpc, {
+      _: 'contacts.resolveUsername', username: `bridgebundle_${retiredChatId}`,
+    } as never)
+    expect(fallback).toHaveLength(1)
   })
 })

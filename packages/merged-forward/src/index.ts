@@ -65,10 +65,19 @@ export interface BundleAddress {
 
 /**
  * Transcript chat ids start above every id the bridge allocates for ordinary
- * peers and above the process-local fallback (`stableId` stays below 2^31),
- * so an encoded bundle can never be mistaken for any other peer.
+ * peers and above the process-local fallback (`stableId` stays below 2^31), so
+ * an encoded bundle can never be mistaken for any other peer.
+ *
+ * The base also carries the address scheme's version.  Transcript message ids
+ * follow the transcript order now, and clients keep the messages they fetched
+ * under the previous hash ids in their own storage, where they would show up
+ * next to the new pages.  The previous scheme counted from `2^31` and its
+ * largest id was `2^31` plus the largest message row at the time (a few
+ * billion for production's ~1.4M rows); it never reaches this base, so every
+ * id it handed out decodes to nothing and the client builds one fresh
+ * transcript view instead of two interleaved ones.
  */
-const BUNDLE_CHAT_ID_BASE = 2 ** 31
+const BUNDLE_CHAT_ID_BASE = 2 ** 32
 /** Low part of a transcript chat id that carries the encoded bundle path. */
 const BUNDLE_PATH_CODES = 1024
 /**

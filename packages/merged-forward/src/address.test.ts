@@ -117,8 +117,10 @@ describe('merged-forward durable bundle addresses', () => {
       ids.add(chatId!)
     }
     expect(ids.size).toBe(cases.length)
-    // The first bundle of a message is the common case and takes code 0.
-    expect(encodeBundleChatId({ storedMessageId: 5, path: [0] })).toBe(2 ** 31 + 5 * 1024)
+    // The first bundle of a message is the common case and takes code 0, and
+    // the scheme starts above every id the previous one handed out.
+    expect(encodeBundleChatId({ storedMessageId: 5, path: [0] })).toBe(2 ** 32 + 5 * 1024)
+    expect(2 ** 32).toBeGreaterThan(2 ** 31 + 1_406_235 * 1024)
   })
 
   it('refuses addresses that do not fit instead of colliding', () => {
@@ -131,8 +133,19 @@ describe('merged-forward durable bundle addresses', () => {
     expect(encodeBundleChatId({ storedMessageId: 1e10, path: [0] })).toBeUndefined()
   })
 
-  it('never decodes ordinary peer ids or process-local transcript ids', () => {
-    for (const chatId of [1, 42, 0x7fffffff, stableId('merged-forward-chat:bundle:outer'), 2 ** 31, 2 ** 31 + 1023]) {
+  it('never decodes ordinary peer ids, process-local ids or a retired scheme', () => {
+    for (const chatId of [1, 42, 0x7fffffff, stableId('merged-forward-chat:bundle:outer')]) {
+      expect(decodeBundleChatId(chatId), String(chatId)).toBeUndefined()
+    }
+    // The scheme that preceded ordered message ids: a client still holding one
+    // of those ids must not find a transcript it would then mix with the
+    // pages it already cached.
+    for (const chatId of [2 ** 31, 2 ** 31 + 1023, 2 ** 31 + 1_406_235 * 1024]) {
+      expect(decodeBundleChatId(chatId), String(chatId)).toBeUndefined()
+    }
+    // ... and the current scheme starts above every id that one produced, so
+    // the two ranges can never overlap.
+    for (const chatId of [2 ** 32 - 1024, 2 ** 32 - 1, 2 ** 32]) {
       expect(decodeBundleChatId(chatId), String(chatId)).toBeUndefined()
     }
     expect(decodeBundleChatId(1_000_000_000_000)).toBeUndefined()
