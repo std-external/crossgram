@@ -114,11 +114,15 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
               platformSessionId: 'qq-session',
               assigned: id === 0,
               automatic: id === 0,
+              sendable: true,
             },
             {
               platformSessionId: 'matrix-session',
               assigned: false,
               automatic: false,
+              // Collection 2 only exists on the QQ account, and Matrix cannot
+              // upload sticker assets, so the dashboard must refuse it there.
+              sendable: id !== 2,
             },
           ],
         })),
@@ -298,6 +302,14 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
       await page
         .getByLabel('Assign to account', { exact: true })
         .selectOption('matrix-session')
+      expect(
+        await page
+          .getByRole('button', {
+            name: 'Cannot send Collection 2',
+            exact: true,
+          })
+          .isDisabled(),
+      ).toBe(true)
       await page
         .getByRole('button', { name: 'Add Collection 1', exact: true })
         .click()

@@ -57,7 +57,7 @@ describe('QQ store animated sticker object contract E2E', () => {
     const registry = new StickerProviderRegistry()
     registry.register('qqnt:stickers', provider)
     const rpc = new StickerRpc(
-      ctx.database, registry, { platformKind: 'qq' } as never, session,
+      ctx.database, registry, qqStickerPlatform(), session,
     )
     await ctx.database.create('mtproto_sticker_set_install', {
       platformSessionId: session.platformSessionId, providerId: 'qqnt:stickers', providerPackId: '11690',
@@ -131,7 +131,7 @@ describe('QQ store animated sticker object contract E2E', () => {
     const provider = new QQStickerProvider(client as never, 'qqnt:stickers', undefined, undefined, 'qqnt')
     const registry = new StickerProviderRegistry()
     registry.register('qqnt:stickers', provider)
-    const rpc = new StickerRpc(ctx.database, registry, { platformKind: 'qq' } as never, session)
+    const rpc = new StickerRpc(ctx.database, registry, qqStickerPlatform(), session)
     for (const [sortOrder, providerPackId] of [...packs.keys()].entries()) {
       await ctx.database.create('mtproto_sticker_set_install', {
         platformSessionId: session.platformSessionId, providerId: 'qqnt:stickers', providerPackId,
@@ -252,4 +252,12 @@ function wireRoundTrip<T>(object: T): T {
 function testStickerProjectionId(value: string): number {
   const hash = createHash('sha256').update(value).digest()
   return 1 + hash.readUInt32BE(0) * 0x10_0000 + (hash.readUInt32BE(4) & 0x0f_ffff)
+}
+
+/** The QQ platform this contract runs against: native stickers, no uploads. */
+function qqStickerPlatform(): never {
+  return {
+    platformKind: 'qq',
+    capabilities: { stickers: { native: true, upload: false, formats: ['static', 'animated', 'video'] } },
+  } as never
 }

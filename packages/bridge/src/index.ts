@@ -48,7 +48,7 @@ import {
 import { BlockedPeerStore, type BlockedContentMode } from './blocked-peers.js'
 import { DialogFolderStore } from './dialog-folders.js'
 import {
-  collectStickerDashboard, setStickerPackAssignment,
+  collectStickerDashboard, setStickerPackAssignment, STICKER_PACK_UNSENDABLE_MESSAGE,
   type StickerDashboardPack, type StickerDashboardSourceAccount, type StickerPackDashboardData,
 } from './sticker-dashboard.js'
 import { CallRegistry, type VoiceMediaStartProvider, type VoiceWorkerClient } from './voice/call-registry.js'
@@ -579,6 +579,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       const assignment = pack.assignments.find((item) => item.platformSessionId === platformSessionId)
       if (!assignment) throw new Error('目标账号不存在，请刷新后重试。')
       if (!assigned && assignment.automatic) throw new Error('账号固有表情包不能取消关联。')
+      if (assigned && !assignment.sendable) throw new Error(STICKER_PACK_UNSENDABLE_MESSAGE)
       await setStickerPackAssignment(ctx.database, platformSessionId, providerId, packId, assigned)
       await publishStickerPacks()
     },
@@ -624,6 +625,7 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
         || account.profile.username || account.profile.id
       return {
         session: account.session,
+        capabilities: platform.capabilities,
         view: {
           platformId,
           platformSessionId: account.session.platformSessionId,
@@ -712,6 +714,9 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       if (!assignment) throw new BridgeManagementError('STICKER_ACCOUNT_NOT_FOUND', '目标账号不存在，请刷新后重试。')
       if (!assigned && assignment.automatic) {
         throw new BridgeManagementError('STICKER_ASSIGNMENT_AUTOMATIC', '账号固有表情包不能取消关联。')
+      }
+      if (assigned && !assignment.sendable) {
+        throw new BridgeManagementError('STICKER_PACK_UNSENDABLE', STICKER_PACK_UNSENDABLE_MESSAGE)
       }
       await setStickerPackAssignment(ctx.database, platformSessionId, providerId, packId, assigned)
       await publishStickerPacks()

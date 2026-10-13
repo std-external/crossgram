@@ -66,8 +66,8 @@ async function createFixture() {
       packs: [{
         providerId: 'qq-main', packId: 'pack-one', title: '收藏',
         assignments: [
-          { platformSessionId: 'session-a', assigned: true, automatic: false },
-          { platformSessionId: 'session-b', assigned: false, automatic: false },
+          { platformSessionId: 'session-a', assigned: true, automatic: false, sendable: true },
+          { platformSessionId: 'session-b', assigned: false, automatic: false, sendable: false },
         ],
       }],
       updatedAt: 42,
@@ -143,7 +143,9 @@ describe('BridgeManagementService', () => {
     expect(stickers).toEqual({
       accounts: [expect.objectContaining({ platformSessionId: 'session-a' })],
       packs: [expect.objectContaining({
-        packId: 'pack-one', assignments: [{ platformSessionId: 'session-a', assigned: true, automatic: false }],
+        packId: 'pack-one', assignments: [{
+          platformSessionId: 'session-a', assigned: true, automatic: false, sendable: true,
+        }],
       })],
       updatedAt: 42,
     })

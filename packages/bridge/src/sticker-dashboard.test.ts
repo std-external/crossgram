@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  collectStickerDashboard, providerBelongsToAccount, setStickerPackAssignment,
+  canSendStickerPacks, collectStickerDashboard, providerBelongsToAccount, setStickerPackAssignment,
 } from './sticker-dashboard.js'
 import type { IMStickerProvider, StickerProviderRegistry } from './sticker-provider.js'
-import type { PlatformSession } from './platform.js'
+import type { PlatformCapabilities, PlatformSession } from './platform.js'
 
 const qqSession = {
   platformId: 'qq/primary', platformSessionId: 'qq-session', userId: '10001', credentials: {}, metadata: {},
@@ -11,6 +11,19 @@ const qqSession = {
 const staticSession = {
   platformId: 'static/demo', platformSessionId: 'static-session', userId: 'demo', credentials: {}, metadata: {},
 } as PlatformSession
+const staticCapabilities = {
+  history: true,
+  send: { text: true, images: true, files: true, mixed: true, maxTextLength: 4096, maxMedia: 9 },
+  conversations: { groups: true, channels: false, subchannels: false },
+  stickers: { native: true, upload: true, formats: ['static', 'animated', 'video'] as const },
+} as unknown as PlatformCapabilities
+const qqCapabilities = {
+  history: true,
+  send: { text: true, images: true, files: true, mixed: true, maxTextLength: 20_000, maxMedia: 9 },
+  conversations: { groups: true, channels: false, subchannels: false },
+  // QQNT sends only native stickers, so another account's pack has no way out.
+  stickers: { native: true, upload: false, formats: ['static', 'animated', 'video'] as const },
+} as unknown as PlatformCapabilities
 
 describe('Bridge sticker pack dashboard', () => {
   it('lists the global catalog, preserves manual assignments, and locks QQ favorites to their owner', async () => {
@@ -32,8 +45,8 @@ describe('Bridge sticker pack dashboard', () => {
     const database = { get: vi.fn(async () => rows) }
 
     const result = await collectStickerDashboard(database as never, registry, [
-      source(qqSession, 'qq', 'QQ Alice'),
-      source(staticSession, 'static', 'Static Demo'),
+      source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+      source(staticSession, 'static', 'Static Demo', staticCapabilities),
     ])
 
     expect(result.accounts.map(account => account.displayName)).toEqual(['QQ Alice', 'Static Demo'])
@@ -41,17 +54,86 @@ describe('Bridge sticker pack dashboard', () => {
     const favorites = result.packs.find(pack => pack.packId === 'qq-favorites')!
     expect(favorites.sourcePlatformId).toBe('qq/primary')
     expect(favorites.assignments).toEqual([
-      { platformSessionId: 'qq-session', automatic: true, assigned: true },
-      { platformSessionId: 'static-session', automatic: false, assigned: false },
+      { platformSessionId: 'qq-session', automatic: true, assigned: true, sendable: true },
+      // A platform that uploads sticker assets can send any provider's pack.
+      { platformSessionId: 'static-session', automatic: false, assigned: false, sendable: true },
     ])
     expect(result.packs.find(pack => pack.packId === 'market-1')!.assignments).toEqual([
-      { platformSessionId: 'qq-session', automatic: false, assigned: false },
-      { platformSessionId: 'static-session', automatic: false, assigned: true },
+      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true },
+      { platformSessionId: 'static-session', automatic: false, assigned: true, sendable: true },
     ])
     expect(qqProvider.listPacks).toHaveBeenCalledWith(
       expect.objectContaining({ session: qqSession, platformKind: 'qq' }),
       { cursor: undefined, limit: 200 },
     )
+  })
+
+  it('refuses to offer another QQ account a pack this account could never send', async () => {
+    const primaryProvider = provider('qq/primary', [
+      { providerId: 'ignored', packId: 'market-1', title: 'QQ 商店包', count: 24 },
+    ])
+    const secondaryProvider = provider('qq/secondary', [
+      { providerId: 'ignored', packId: 'market-1', title: 'QQ 商店包', count: 24 },
+    ])
+    const registry = stickerRegistry([
+      ['qq/primary:stickers', primaryProvider],
+      ['qq/secondary:stickers', secondaryProvider],
+    ])
+    const secondarySession = {
+      platformId: 'qq/secondary', platformSessionId: 'qq-second-session', userId: '10002',
+      credentials: {}, metadata: {},
+    } as PlatformSession
+    // A dashboard from before the send path was checked may have written this
+    // row; the account must still learn from the assignment that QQ cannot send
+    // a collection which belongs to another account.
+    const rows = [{
+      platformSessionId: 'qq-second-session', providerId: 'qq/primary:stickers', providerPackId: 'market-1',
+      installedAt: new Date(), sortOrder: 0, archived: false, uninstalled: false,
+    }]
+    const database = { get: vi.fn(async () => rows) }
+
+    const result = await collectStickerDashboard(database as never, registry, [
+      source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+      source(secondarySession, 'qq', 'QQ Bob', qqCapabilities),
+    ])
+
+    const primaryPack = result.packs.find(pack => pack.providerId === 'qq/primary:stickers')!
+    expect(primaryPack.assignments).toEqual([
+      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true },
+      { platformSessionId: 'qq-second-session', automatic: false, assigned: true, sendable: false },
+    ])
+    const ownPack = result.packs.find(pack => pack.providerId === 'qq/secondary:stickers')!
+    expect(ownPack.assignments[1]).toEqual({
+      platformSessionId: 'qq-second-session', automatic: false, assigned: false, sendable: true,
+    })
+  })
+
+  it('decides sendability from the target platform capabilities and provider ownership', () => {
+    const qqProvider = provider('qq/primary', [])
+    const sharedProvider: IMStickerProvider = {
+      // A platform-independent provider (an imported or company collection)
+      // has no native expression on any account.
+      listPacks: vi.fn(async () => ({ packs: [] })),
+      getPack: vi.fn(async () => null),
+      getSticker: vi.fn(async () => null),
+      openAsset: vi.fn(async () => { throw new Error('not used') }),
+    }
+
+    expect(canSendStickerPacks(qqProvider, {
+      platformId: 'qq/primary', platformKind: 'qq', capabilities: qqCapabilities,
+    })).toBe(true)
+    expect(canSendStickerPacks(qqProvider, {
+      platformId: 'qq/secondary', platformKind: 'qq', capabilities: qqCapabilities,
+    })).toBe(false)
+    expect(canSendStickerPacks(qqProvider, {
+      platformId: 'static/demo', platformKind: 'static', capabilities: staticCapabilities,
+    })).toBe(true)
+    expect(canSendStickerPacks(sharedProvider, {
+      platformId: 'qq/primary', platformKind: 'qq', capabilities: qqCapabilities,
+    })).toBe(false)
+    expect(canSendStickerPacks(sharedProvider, {
+      platformId: 'static/demo', platformKind: 'static', capabilities: staticCapabilities,
+    })).toBe(true)
   })
 
   it('loads every provider page and rejects repeated cursors', async () => {
@@ -116,6 +198,7 @@ function provider(
     getPack: vi.fn(async () => null),
     getSticker: vi.fn(async () => null),
     openAsset: vi.fn(async () => { throw new Error('not used') }),
+    prepareSend: vi.fn(async () => null),
   }
 }
 
@@ -123,9 +206,15 @@ function stickerRegistry(entries: Array<[string, IMStickerProvider]>): StickerPr
   return { entries } as unknown as StickerProviderRegistry
 }
 
-function source(session: PlatformSession, platformKind: string, displayName: string) {
+function source(
+  session: PlatformSession,
+  platformKind: string,
+  displayName: string,
+  capabilities?: PlatformCapabilities,
+) {
   return {
     session,
+    capabilities,
     view: {
       platformId: session.platformId,
       platformSessionId: session.platformSessionId,

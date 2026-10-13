@@ -115,7 +115,9 @@ export default function StickersPage(props: PageProps) {
                       (account) =>
                         account.platformSessionId ===
                         pack().sourcePlatformSessionId,
-                    )
+                    ),
+                  sendable = () => assignment()?.sendable !== false,
+                  removable = () => Boolean(assignment()?.assigned)
                 return (
                   <article
                     class="panel sticker-card"
@@ -142,6 +144,9 @@ export default function StickersPage(props: PageProps) {
                           From {source()!.displayName}
                         </span>
                       </Show>
+                      <Show when={!sendable()}>
+                        <span class="chip">Cannot send here</span>
+                      </Show>
                     </div>
                     <button
                       class={
@@ -149,14 +154,21 @@ export default function StickersPage(props: PageProps) {
                         (assignment()?.assigned ? 'tonal' : 'outlined')
                       }
                       disabled={
-                        !rpc.ready || action.busy() || assignment()?.automatic
+                        !rpc.ready ||
+                        action.busy() ||
+                        assignment()?.automatic ||
+                        (!sendable() && !removable())
                       }
                       aria-label={
                         (assignment()?.automatic
                           ? 'Automatically assigned '
-                          : assignment()?.assigned
-                            ? 'Remove '
-                            : 'Add ') + pack().title
+                          : !sendable()
+                            ? removable()
+                              ? 'Remove '
+                              : 'Cannot send '
+                            : assignment()?.assigned
+                              ? 'Remove '
+                              : 'Add ') + pack().title
                       }
                       onClick={() => {
                         const accountId = selected(),
@@ -174,9 +186,13 @@ export default function StickersPage(props: PageProps) {
                     >
                       {assignment()?.automatic
                         ? 'Automatically assigned'
-                        : assignment()?.assigned
-                          ? 'Added · remove'
-                          : 'Add to account'}
+                        : !sendable()
+                          ? removable()
+                            ? 'Not sendable · remove'
+                            : 'Cannot send on this account'
+                          : assignment()?.assigned
+                            ? 'Added · remove'
+                            : 'Add to account'}
                     </button>
                   </article>
                 )

@@ -275,7 +275,7 @@ describe('StickerRpc', () => {
     const rpc = new StickerRpc(
       database as never,
       registry,
-      { platformKind: 'qq' } as IMPlatform,
+      qqStickerPlatform(),
       { platformId: 'qq', platformSessionId: 'session' } as PlatformSession,
     )
 
@@ -304,6 +304,7 @@ describe('StickerRpc', () => {
     }
     const provider: IMStickerProvider = {
       capabilities: { ownerPlatformId: 'qq' },
+      prepareSend: vi.fn(async () => null),
       listPacks: vi.fn(async () => ({ packs: [{
         providerId: 'qq:stickers', packId: 'qq-favorites', title: 'QQ Favorites', count: 1,
         automaticAssociation: 'provider-account' as const,
@@ -338,7 +339,7 @@ describe('StickerRpc', () => {
           : []),
     }
     const rpc = new StickerRpc(
-      database as never, registry, { platformKind: 'qq' } as IMPlatform,
+      database as never, registry, qqStickerPlatform(),
       { platformId: 'qq', platformSessionId: 'session' } as PlatformSession,
     )
 
@@ -568,6 +569,8 @@ describe('StickerRpc', () => {
       ['200', { providerId: 'qq:stickers', packId: '200', title: 'Second', version: 1, stickers: [second] }],
     ])
     const provider: IMStickerProvider = {
+      capabilities: { platformKinds: ['qq'], ownerPlatformId: 'qq' },
+      prepareSend: vi.fn(async () => null),
       listPacks: vi.fn(async () => ({ packs: [...packs.values()].map(({ stickers, ...pack }) => ({
         ...pack, count: stickers.length,
       })) })),
@@ -599,7 +602,7 @@ describe('StickerRpc', () => {
     const rpc = new StickerRpc(
       database as never,
       registry,
-      { platformKind: 'qq' } as IMPlatform,
+      qqStickerPlatform(),
       { platformId: 'qq', platformSessionId: 'session' } as PlatformSession,
     )
 
@@ -795,6 +798,54 @@ describe('StickerRpc', () => {
     expect(database.upsert).not.toHaveBeenCalled()
   })
 
+  it('keeps a pack another account installed out of a catalog this account cannot send', async () => {
+    // The pack belongs to another QQ account, so the bridge would fall back to
+    // a sticker upload — which QQNT cannot do. The persisted install row from
+    // the WebUI must therefore not project a catalog that fails on send.
+    const foreign = stickerHarness()
+    ;(foreign.provider as { capabilities: IMStickerProvider['capabilities'] }).capabilities = {
+      platformKinds: ['qq'], ownerPlatformId: 'qq/source', sessionScoped: true,
+    }
+    foreign.provider.prepareSend = vi.fn(async () => ({
+      type: 'native' as const, providerId: foreign.sticker.providerId,
+      stickerId: foreign.sticker.stickerId, reference: { native: true },
+    }))
+
+    await expect(foreign.rpc.getAllStickers({
+      _: 'messages.getAllStickers', hash: Long.ZERO,
+    })).resolves.toMatchObject({ _: 'messages.allStickers', sets: [] })
+    await expect(foreign.rpc.getStickers({
+      _: 'messages.getStickers', emoticon: '', hash: Long.ZERO,
+    })).resolves.toMatchObject({ stickers: [] })
+    expect(foreign.provider.listPacks).not.toHaveBeenCalled()
+
+    // The same pack is available to an account whose platform uploads sticker
+    // assets, where the persisted assignment keeps working as before.
+    const uploading = stickerHarness(5 * 60_000, {
+      native: true, upload: true, formats: ['static', 'animated', 'video'],
+    })
+    ;(uploading.provider as { capabilities: IMStickerProvider['capabilities'] }).capabilities = {
+      platformKinds: ['qq'], ownerPlatformId: 'qq/source', sessionScoped: true,
+    }
+    await expect(uploading.rpc.getAllStickers({
+      _: 'messages.getAllStickers', hash: Long.ZERO,
+    })).resolves.toMatchObject({
+      _: 'messages.allStickers', sets: [expect.objectContaining({ title: 'QQ Pack' })],
+    })
+  })
+
+  it('keeps the account-owned pack of a native-only platform installed', async () => {
+    const { rpc, provider } = stickerHarness()
+
+    await expect(rpc.getAllStickers({
+      _: 'messages.getAllStickers', hash: Long.ZERO,
+    })).resolves.toMatchObject({
+      _: 'messages.allStickers',
+      sets: [expect.objectContaining({ title: 'QQ Pack', installedDate: expect.any(Number) })],
+    })
+    expect(provider.listPacks).toHaveBeenCalled()
+  })
+
   it('ignores legacy bridge-local QQ favorite rows in favor of the QQ favorite set', async () => {
     const row = { providerId: 'qq:stickers', providerStickerId: 'favorite:local-only' }
     const first = stickerHarness()
@@ -919,7 +970,24 @@ describe('StickerRpc', () => {
   })
 })
 
-function stickerHarness(cacheTtlMs = 5 * 60_000) {
+/** A QQ account's platform: it sends native stickers and cannot upload assets. */
+function qqStickerPlatform(
+  stickers: NonNullable<IMPlatform['capabilities']['stickers']> = {
+    native: true, upload: false, formats: ['static', 'animated', 'video'],
+  },
+): IMPlatform {
+  return {
+    platformKind: 'qq',
+    capabilities: { stickers },
+  } as unknown as IMPlatform
+}
+
+function stickerHarness(
+  cacheTtlMs = 5 * 60_000,
+  stickers: NonNullable<IMPlatform['capabilities']['stickers']> = {
+    native: true, upload: false, formats: ['static', 'animated', 'video'],
+  },
+) {
   const sticker: IMSticker = {
     providerId: 'qq:stickers', stickerId: 'market:11690:wave', packId: '11690',
     title: 'Wave', format: 'static', mimeType: 'image/png', size: 321, version: 3,
@@ -937,6 +1005,7 @@ function stickerHarness(cacheTtlMs = 5 * 60_000) {
     setSavedSticker: vi.fn(async () => undefined),
     openAsset: vi.fn(async () => { throw new Error('not used') }),
     openThumbnail: vi.fn(async () => null),
+    prepareSend: vi.fn(async () => null),
   }
   let revision = 0
   const registry = {
@@ -968,7 +1037,7 @@ function stickerHarness(cacheTtlMs = 5 * 60_000) {
   const rpc = new StickerRpc(
     database as never,
     registry,
-    { platformKind: 'qq' } as IMPlatform,
+    { platformKind: 'qq', capabilities: { stickers } } as unknown as IMPlatform,
     { platformId: 'qq', platformSessionId: 'session' } as PlatformSession,
     1,
     cacheTtlMs,

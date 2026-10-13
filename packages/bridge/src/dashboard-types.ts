@@ -58,6 +58,12 @@ export interface StickerDashboardAssignment {
   platformSessionId: string
   assigned: boolean
   automatic: boolean
+  /**
+   * Whether this account can send the pack's stickers at all. Assigning a pack
+   * a platform will refuse to send only produces a visible-but-dead catalog in
+   * the target client, so the dashboard surfaces the reason instead.
+   */
+  sendable: boolean
 }
 
 export interface StickerDashboardPack {

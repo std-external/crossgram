@@ -412,6 +412,12 @@ type IMStickerSendPlan =
 
 adapter 只负责执行最终 native/upload 输入，不实现 Telegram sticker set、收藏或最近使用逻辑。
 
+发送能力决定一个账号能看到哪些 pack：只有该账号**发得出去**的 provider 才进入它的 catalog，WebUI 的
+「Assign to account」也只允许关联这些。bridge 只向账号自己的 provider 索取 native 计划，其它 provider
+一律走 asset upload，因此 `capabilities.stickers.upload` 为 false 的平台（QQ）只能看到自己 provider 的
+pack。session-scoped provider（`ownerPlatformId`）的 pack 属于它自己的账号；另一个账号要用同一套表情包时，
+应关联来自它自己 catalog 的同一 pack，否则客户端只会看到一批点下去就报 `STICKER_SEND_UNAVAILABLE` 的表情。
+
 ### 群文件
 
 平台可选实现 `listGroupFiles(session, conversation, { folderId, cursor, limit })`，返回原生群文件夹和文件。

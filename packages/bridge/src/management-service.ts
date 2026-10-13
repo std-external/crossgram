@@ -75,6 +75,7 @@ export type BridgeManagementErrorCode =
   | 'STICKER_PACK_NOT_FOUND'
   | 'STICKER_ACCOUNT_NOT_FOUND'
   | 'STICKER_ASSIGNMENT_AUTOMATIC'
+  | 'STICKER_PACK_UNSENDABLE'
 
 export class BridgeManagementError extends Error {
   constructor(readonly code: BridgeManagementErrorCode, message: string = code) {

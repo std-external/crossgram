@@ -1,5 +1,5 @@
 import type { Database } from '@cordisjs/plugin-database'
-import type { PlatformSession } from './platform.js'
+import type { PlatformCapabilities, PlatformSession } from './platform.js'
 import type {
   IMStickerPackSummary, IMStickerProvider, StickerProviderContext, StickerProviderRegistry,
 } from './sticker-provider.js'
@@ -10,7 +10,33 @@ export type { StickerDashboardAccount, StickerDashboardAssignment, StickerDashbo
 export interface StickerDashboardSourceAccount {
   view: StickerDashboardAccount
   session: PlatformSession
+  /** Target platform capabilities, needed to tell whether an assignment can be sent. */
+  capabilities?: PlatformCapabilities
 }
+
+/**
+ * Whether an account can ever send the stickers of a provider's packs.
+ *
+ * The bridge asks only the account's own provider for a native send plan and
+ * uploads the asset for every other provider, so a platform without sticker
+ * uploads can only send the collections it owns itself. This mirrors the rule
+ * `DialogRpc` enforces with `STICKER_SEND_UNAVAILABLE`, evaluated before the
+ * dashboard offers an assignment and before a session projects its catalog.
+ */
+export function canSendStickerPacks(
+  provider: IMStickerProvider,
+  target: { platformId: string, platformKind: string, capabilities?: PlatformCapabilities },
+): boolean {
+  const stickers = target.capabilities?.stickers
+  if (stickers?.upload) return true
+  if (!stickers?.native) return false
+  return providerBelongsToAccount(provider, target.platformId, target.platformKind)
+    && typeof provider.prepareSend === 'function'
+}
+
+/** Refusal message for linking a pack the target account can never send. */
+export const STICKER_PACK_UNSENDABLE_MESSAGE =
+  '该账号无法发送这个表情包，请改用来自该账号自己的表情包。'
 
 export async function collectStickerDashboard(
   database: Database,
@@ -35,13 +61,16 @@ export async function collectStickerDashboard(
         version: pack.version,
         sourcePlatformId: source.view.platformId,
         sourcePlatformSessionId: source.view.platformSessionId,
-        assignments: accounts.map(({ view }) => {
+        assignments: accounts.map(({ view, capabilities }) => {
           const automatic = isAutomaticallyAssociated(provider, pack, view.platformId)
           const row = rowByKey.get(assignmentKey(view.platformSessionId, providerId, pack.packId))
           return {
             platformSessionId: view.platformSessionId,
             automatic,
             assigned: automatic || !!row && !row.uninstalled,
+            sendable: canSendStickerPacks(provider, {
+              platformId: view.platformId, platformKind: view.platformKind, capabilities,
+            }),
           }
         }),
       })

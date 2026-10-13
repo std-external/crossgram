@@ -5,7 +5,7 @@ import Long from 'long'
 import { RpcError } from '@mtproto-relay/mtproto'
 import { stableId } from './dialogs.js'
 import { decodeTelegramStickerPath, telegramStickerPlaceholder } from './sticker-outline.js'
-import { isAutomaticallyAssociated, providerBelongsToAccount } from './sticker-dashboard.js'
+import { isAutomaticallyAssociated, canSendStickerPacks, providerBelongsToAccount } from './sticker-dashboard.js'
 import type { IMDirectDownload, IMPlatform, PlatformSession } from './platform.js'
 import type {
   IMSticker, IMStickerAsset, IMStickerPack, IMStickerPackSummary, IMStickerProvider, IMStickerSendPlan,
@@ -438,6 +438,11 @@ export class StickerRpc {
         pack: IMStickerPackSummary
       }> = []
       for (const [providerId, provider] of this._registry.entries) {
+        // A pack this account can never send must not enter its catalog: the
+        // client would render every document and only fail on the send with
+        // STICKER_SEND_UNAVAILABLE. An install row persisted by an older
+        // dashboard is therefore ignored until the account can send the pack.
+        if (!this._providerSendable(provider)) continue
         let cursor: string | undefined
         const seen = new Set<string>()
         for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
@@ -462,7 +467,7 @@ export class StickerRpc {
         const key = packKey(row.providerId, row.providerPackId)
         if (row.uninstalled || listed.has(key)) continue
         const provider = this._registry.get(row.providerId)
-        if (!provider) continue
+        if (!provider || !this._providerSendable(provider)) continue
         // A provider's lightweight catalog can be temporarily incomplete
         // after restart even though its detail endpoint can still reopen an
         // installed pack. Persisted Telegram installs are therefore another
@@ -740,6 +745,15 @@ export class StickerRpc {
       this._session.platformId,
       this._platform.platformKind ?? this._session.platformId,
     )
+  }
+
+  /** Whether this session's platform can send the stickers a provider exposes. */
+  private _providerSendable(provider: IMStickerProvider): boolean {
+    return canSendStickerPacks(provider, {
+      platformId: this._session.platformId,
+      platformKind: this._platform.platformKind ?? this._session.platformId,
+      capabilities: this._platform.capabilities,
+    })
   }
 
   private _context(): StickerProviderContext {

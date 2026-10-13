@@ -158,7 +158,7 @@ describe('Telegram sticker importer E2E', () => {
     await peers.bootstrap(session)
     expect(events.some((event) => event.type === 'message' && event.conversation.id === importer.TELEGRAM_STICKER_IMPORTER_CONVERSATION_ID)).toBe(true)
 
-    const rpc = new StickerRpc(ctx.database, stickers.registry, { platformKind: 'static' } as never, session)
+    const rpc = new StickerRpc(ctx.database, stickers.registry, staticStickerPlatform(), session)
     await expect(rpc.getAllStickers({ _: 'messages.getAllStickers', hash: Long.ZERO })).resolves.toMatchObject({ sets: [] })
 
     const peer = await peers.resolve(session, importer.TELEGRAM_STICKER_IMPORTER_CONVERSATION_ID)
@@ -201,7 +201,7 @@ describe('Telegram sticker importer E2E', () => {
   it('does not expose one session imports or invalidate another session catalog cache', async () => {
     const { ctx, stickers, peers } = await fixture()
     const otherSession = { ...session, platformSessionId: 'other-session', userId: 'other' }
-    const otherRpc = new StickerRpc(ctx.database, stickers.registry, { platformKind: 'static' } as never, otherSession)
+    const otherRpc = new StickerRpc(ctx.database, stickers.registry, staticStickerPlatform(), otherSession)
     const provider = stickers.require(importer.TELEGRAM_STICKER_IMPORTER_PROVIDER_ID)
     const listPacks = vi.spyOn(provider, 'listPacks')
     const before = await otherRpc.getAllStickers({ _: 'messages.getAllStickers', hash: Long.ZERO })
@@ -217,3 +217,11 @@ describe('Telegram sticker importer E2E', () => {
     expect(listPacks).toHaveBeenCalledTimes(2)
   })
 })
+
+/** The static platform the importer runs against: it uploads sticker assets. */
+function staticStickerPlatform(): never {
+  return {
+    platformKind: 'static',
+    capabilities: { stickers: { native: true, upload: true, formats: ['static', 'animated', 'video'] } },
+  } as never
+}
