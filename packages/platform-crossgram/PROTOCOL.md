@@ -7,9 +7,10 @@
 2. **WebSocket 事件流** —— 服务端主动推送消息、撤回、回应、通话信号等事件。
 3. **本地 Unix socket PCM 媒体通道** —— 语音通话的 48 kHz s16le 音频帧传输。
 
-协议版本由 `qqnt-bridge` 在 `/v1/status` 中返回，当前服务端版本为
-`26`。`platform-crossgram` 适配器当前支持的版本范围为 `19` 到 `26`；
-高于或低于该范围的版本会被适配器拒绝。两个仓库的协议类型定义分别在
+协议版本由 `qqnt-bridge` 在 `/v1/status` 中返回。`platform-crossgram`
+适配器当前支持的版本范围为 `19` 到 `35`；高于或低于该范围的版本会被
+适配器拒绝。`35` 起 bridge 保留调用方给出的元素顺序（见有序 `parts`
+发送体）。两个仓库的协议类型定义分别在
 `packages/platform-crossgram/src/protocol.ts`（适配器侧，`Wire*` 类型）
 与 `qqnt-bridge/src/protocol.ts`（服务端侧，`QQ*` 类型）中。
 
@@ -418,8 +419,16 @@ interface SendManifest {
   mediaFraming?: 'length-prefixed-v1'
   media?: QQSendMediaSpec[]
   uploadedMedia?: QQPreparedMedia[]
+  /** 协议 35 起：按适配器给出的顺序排列的文本与媒体元素。 */
+  parts?: QQSendPart[]
 }
 ```
+
+协议 35 起适配器优先使用 `parts`：每个文本元素自带文本，每个媒体元素自带
+`QQSendMediaSpec` 与可选的 `QQPreparedMedia`，服务端据此保留调用方的元素
+顺序，此时 `text`、`textParts`、`media`、`uploadedMedia` 不再出现在该请求
+里。低于 35 的 bridge 收到的仍是上表中的扁平形状（一段文本后跟全部媒体）。
+流式语音消息不受影响，仍走 `media` + `mediaFraming`。
 
 消息体分两种情况：
 

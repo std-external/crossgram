@@ -37,8 +37,11 @@ import type {
 
 const MIN_PROTOCOL_VERSION = 19
 // Keep the lower bound stable while accepting additive bridge revisions so account provisioning does
-// not fail closed before Telegram QR approval can complete.
-const MAX_PROTOCOL_VERSION = 34
+// not fail closed before Telegram QR approval can complete.  The upper bound has to cover every
+// revision this adapter already branches on: protocol 35 is the one that keeps the caller's element
+// order (`QQNTClient.supportsSendParts`), so refusing it would fail provisioning for the very bridge
+// whose ordered send shape the adapter is written to use.
+const MAX_PROTOCOL_VERSION = 35
 /** Poke bursts a single request may send; QQ treats longer bursts as flooding. */
 const QQ_POKE_MAX_COUNT = 10
 
