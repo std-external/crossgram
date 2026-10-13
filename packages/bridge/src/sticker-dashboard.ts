@@ -48,9 +48,11 @@ export const STICKER_PACK_SAVE_UNSUPPORTED_MESSAGE =
 
 /**
  * How many stickers one save request mirrors. Every sticker is a native
- * platform write, so the request stays bounded and reports what is left.
+ * platform write that can hold QQ's serialized download slot for up to half a
+ * minute, so the request is bounded by count and by time, and reports what is
+ * left for the next one.
  */
-export const STICKER_PACK_SAVE_LIMIT = 100
+export const STICKER_PACK_SAVE_LIMIT = 25
 
 /**
  * The provider that can write to an account's own native collection. Only a

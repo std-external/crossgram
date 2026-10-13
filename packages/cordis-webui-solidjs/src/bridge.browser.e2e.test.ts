@@ -323,7 +323,7 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
         .getByRole('button', { name: 'Save Collection 3', exact: true })
         .click()
       await page
-        .getByText('Saved 20 · already owned 0', { exact: false })
+        .getByText('Saved 20 · skipped 0', { exact: false })
         .waitFor()
       expect(saves.at(-1)).toEqual([
         'matrix-session',

@@ -5,6 +5,14 @@ import type {
 import type { QQNTClient } from './client.js'
 import type { QQStickerReference, WireSticker, WireStickerPack } from './protocol.js'
 
+/**
+ * How long one mirror request may spend on native writes. Each market face goes
+ * through QQ's serialized download slot (the bridge polls up to 300 × 100 ms for
+ * an animated path), so a pack of dozens of faces would otherwise hold the relay
+ * for minutes.
+ */
+const SAVE_STICKERS_BUDGET_MS = 60_000
+
 /** Exposes QQ market packs and the account's QQ favorite collection. */
 export class QQStickerProvider implements IMStickerProvider {
   readonly capabilities
@@ -130,47 +138,56 @@ export class QQStickerProvider implements IMStickerProvider {
   /**
    * Adds another account's stickers to this account's QQ favorite collection
    * (`收藏表情`), the only QQ collection the relay can write to: QQ's own panel
-   * has no "add this pack" call. Only references QQ resolves from the face
-   * itself can move between accounts — a favorite copy belongs to the account
-   * that saved it (`<uin>_…` res id), and an imported Telegram document has no
-   * QQ expression at all.
+   * has no "add this pack" call. Only market faces can move between accounts —
+   * a favorite copy belongs to the account that saved it (`<uin>_…` res id), an
+   * imported Telegram document has no QQ expression at all, and `qqnt-bridge`
+   * refuses system faces outright (`QQ system faces cannot be added to
+   * favorites`).
+   *
+   * Each market face costs one native QQ write that resolves the face through
+   * QQ's single serialized download slot, so the batch is bounded by both a
+   * count and a deadline; whatever is left is reported as `remaining` instead of
+   * holding the relay for minutes.
    */
   async saveStickers(
     _context: StickerProviderContext,
     stickers: readonly IMSticker[],
-    options: { limit?: number } = {},
+    options: { limit?: number, budgetMs?: number } = {},
   ): Promise<IMStickerSaveSummary> {
     const portable: QQStickerReference[] = []
     let skipped = 0
     for (const sticker of stickers) {
       const reference = sticker.locator as unknown as QQStickerReference | undefined
-      if (!reference?.kind || reference.deferred
-        || (reference.kind !== 'market' && reference.kind !== 'sysface')) {
+      if (!reference?.kind || reference.deferred || reference.kind !== 'market') {
         skipped++
         continue
       }
       portable.push(reference)
     }
     const limit = Math.max(0, options.limit ?? portable.length)
-    const accepted = portable.slice(0, limit)
+    const candidates = portable.slice(0, limit)
+    const deadline = Date.now() + Math.max(0, options.budgetMs ?? SAVE_STICKERS_BUDGET_MS)
     let saved = 0
     let failed = 0
-    for (const [index, reference] of accepted.entries()) {
+    let processed = 0
+    for (const [index, reference] of candidates.entries()) {
+      if (Date.now() >= deadline) break
+      processed++
       try {
-        // One native QQ write per sticker, in order: the relay's market path is
-        // serialized by the bridge, and a batch must not queue behind itself.
+        // One native QQ write per sticker, in order: the bridge serializes the
+        // market download slot, and a batch must not queue behind itself.
         await this.client.setSavedSticker(reference, true)
         saved++
       } catch (error) {
         failed++
         this.logger?.warn(
           'Could not save QQ sticker %s into the account collection (%d/%d): %s',
-          reference.name ?? String(index), index + 1, accepted.length,
+          reference.name ?? String(index), index + 1, candidates.length,
           error instanceof Error ? error.message : String(error),
         )
       }
     }
-    return { saved, skipped, failed, remaining: portable.length - accepted.length }
+    return { saved, skipped, failed, remaining: portable.length - processed }
   }
 
   private async mapPack(pack: WireStickerPack): Promise<IMStickerPack> {

@@ -249,8 +249,7 @@ export default function StickersPage(props: PageProps) {
                     <Show when={saveResult()}>
                       {(result) => (
                         <p class="sticker-save-result">
-                          Saved {result().saved} · already owned{' '}
-                          {result().skipped}
+                          Saved {result().saved} · skipped {result().skipped}
                           {result().failed
                             ? ' · failed ' + result().failed
                             : ''}

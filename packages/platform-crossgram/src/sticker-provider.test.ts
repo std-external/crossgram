@@ -276,7 +276,7 @@ describe('QQStickerProvider pack collection', () => {
     locator: { kind: 'sysface' as const, faceId: '476', faceType: 3, name: 'face', animated: true },
   })
 
-  it('saves only the references another QQ account can resolve itself', async () => {
+  it('saves only the market faces another QQ account can resolve itself', async () => {
     const client = { setSavedSticker: vi.fn(async () => {}) }
     const logger = { warn: vi.fn() }
     const provider = new QQStickerProvider(client as never, 'qq/other:stickers', undefined, logger)
@@ -286,15 +286,45 @@ describe('QQStickerProvider pack collection', () => {
       mimeType: 'image/webp', locator: { fileId: 'file-one' },
     }
 
+    // System faces are not portable either: qqnt-bridge answers "QQ system faces
+    // cannot be added to favorites" for them.
     await expect(provider.saveStickers(context, [
       market('first'), favoriteCopy(), sysface(), deferred, imported, market('second', true),
-    ])).resolves.toEqual({ saved: 3, skipped: 3, failed: 0, remaining: 0 })
+    ])).resolves.toEqual({ saved: 2, skipped: 4, failed: 0, remaining: 0 })
     expect(client.setSavedSticker.mock.calls).toEqual([
       [expect.objectContaining({ kind: 'market', stickerId: 'first' }), true],
-      [expect.objectContaining({ kind: 'sysface', faceId: '476' }), true],
       [expect.objectContaining({ kind: 'market', stickerId: 'second', animated: true }), true],
     ])
     expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('stops at the deadline and reports the stickers left for the next request', async () => {
+    let clock = 0
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const client = {
+      setSavedSticker: vi.fn(async () => {
+        // Each market face resolves through QQ's serialized download slot.
+        clock += 25_000
+      }),
+    }
+    const provider = new QQStickerProvider(client as never, 'qq/other:stickers')
+    try {
+      await expect(provider.saveStickers(
+        context,
+        [market('a'), market('b'), market('c')],
+        { budgetMs: 60_000 },
+      )).resolves.toEqual({ saved: 3, skipped: 0, failed: 0, remaining: 0 })
+
+      clock = 0
+      await expect(provider.saveStickers(
+        context,
+        [market('a'), market('b'), market('c'), market('d'), market('e')],
+        { budgetMs: 60_000 },
+      )).resolves.toEqual({ saved: 3, skipped: 0, failed: 0, remaining: 2 })
+      expect(client.setSavedSticker).toHaveBeenCalledTimes(6)
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('bounds one request and reports the stickers left for the next one', async () => {

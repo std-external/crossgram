@@ -39,23 +39,55 @@ at a time, into that account's favorites.
   **Save to this account** (plus Remove when an association exists) and reports the summary
   (`Saved 20 · already owned 3 · 2 left`).
 
-## Boundaries (measured, not guessed)
+## Is there a whole-pack call after all? (verified against `qqnt-bridge`)
+
+No. The bridge checkout (`xuuuuan/crossgram-qqnt`, `1.0.53`, protocol `34`) shows:
+
+- `src/server.ts:407-445,975` — the complete sticker route table is `GET /v1/stickers/packs`,
+  `GET /v1/stickers/packs/:packId`, `GET /v1/stickers/saved`, `GET /v1/stickers/:stickerId`,
+  `POST /v1/stickers/saved`, `POST /v1/stickers/asset`, `POST /v1/stickers/meta`. There is no pack-level write.
+- `src/kernel-types.ts:658,668,724` — the injected QQ service surface exposes exactly two writes, both keyed by one
+  face: `addFavEmoji({emojiId, packageId, emojiPath,…})`, `deleteFavEmoji(resIds)`, plus
+  `fetchMarketEmoticonAuthDetail({epId, eId, scene})` where `scene: 0` is QQ's own "add to favorites" authorization.
+- `src/kernel-types.ts:669,683` — the pack panel is read-only through `fetchMarketEmoticonList` /
+  `fetchBottomEmojiTableList` (the account's 我的表情 / 漫游 tabs), which is what `getStickerPacks()` projects
+  (`src/qq-kernel.ts:7755-7820`).
+- `src/qq-kernel.ts:2449-2510` — `setSavedSticker()` performs one favorite: authorize a `market` face
+  (`fetchMarketEmoticonAuthDetail` scene 0), resolve its local path, `addFavEmoji`. It also **rejects system
+  faces** (`QQ system faces cannot be added to favorites`, line 2452), so `saveStickers()` skips `sysface` instead
+  of attempting it.
+
+So QQ's own "添加到我的表情" for a store pack is a client business call against QQ's servers, not something any
+binding the bridge injects performs, and the relay cannot trigger it. Wiring that up would be a `qqnt-bridge`
+feature (a new route plus a native/OIDB command — the bridge does craft OIDB packets for other features, e.g.
+`src/upload-protocol.ts`), and nothing like it exists today.
+
+## Cost of the per-face route
+
+`resolveMarketStickerPathOnce()` (`src/qq-kernel.ts:7962-8015`) resolves a market face through QQ's **one**
+serialized download slot (`marketStickerDownloadTail`, line 544/7984) and, for animated faces, polls
+`getMarketEmoticonPath` up to 300 × 100 ms. The short-circuit exists only for animated faces, so a static store face
+can spend about half a minute there per sticker. A batch therefore has to be bounded: one request mirrors at most
+`STICKER_PACK_SAVE_LIMIT` (25) stickers and stops after a 60 s budget, reporting what is left as `remaining`.
+
+## Other boundaries (measured, not guessed)
 
 - A QQ pack whose stickers are only this account's favorites cannot move: their res ids are account scoped. The
   relay can serve the bytes, but QQ offers no way to create a favorite from bytes.
 - Imported Telegram packs (`telegram-sticker-importer`) cannot move to a QQ account: no QQ reference exists for
   them, so they stay visible-and-unsendable on QQ and are reported as skipped.
-- One request mirrors at most `STICKER_PACK_SAVE_LIMIT` (100) stickers, each a native QQ write; the summary's
-  `remaining` says how many are left, and running the action again continues where it stopped.
-  A pack larger than a QQ account's own favorite limit will keep failing there — `failed` reports it.
+- System faces (`sysface`) cannot be favorited by the bridge at all, so they are skipped too.
+- A pack larger than a QQ account's own favorite limit will keep failing there — `failed` reports it.
 - An account that already owns the pack (its own provider lists the same `packId`) does not need this: linking its
-  own card is enough, and the WebUI still offers that.
+  own card is enough, and the WebUI still offers that. Skipping faces the account already favorited would save the
+  native download for each of them; the summary reports `skipped` today, and that check can reuse
+  `fetchFavEmojiList`/`getSavedStickers` later.
 
 ## Verification
 
-- `packages/platform-crossgram/src/sticker-provider.test.ts`: market/system faces are saved in order, favorite
-  copies, deferred references and imported documents are skipped, `limit` reports `remaining`, a rejected native
-  write is counted and logged without losing the rest.
+- `packages/platform-crossgram/src/sticker-provider.test.ts`: market faces are saved in order while favorite
+  copies, system faces, deferred references and imported documents are skipped, `limit` and the deadline report
+  `remaining`, and a rejected native write is counted and logged without losing the rest.
 - `packages/bridge/src/sticker-dashboard.test.ts`: `saveable` per account, the pack is read through the source
   account and written through the collector (`saveStickers` called with the source session and the pack's
   stickers), and unsupported accounts / unknown packs are refused with a message.
