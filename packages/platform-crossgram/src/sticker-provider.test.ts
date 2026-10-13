@@ -252,6 +252,82 @@ describe('QQStickerProvider market previews', () => {
   })
 })
 
+describe('QQStickerProvider pack collection', () => {
+  const market = (stickerId: string, animated = false) => ({
+    providerId: 'qq/source:stickers', stickerId: `market:11690:${stickerId}`, packId: '11690',
+    format: animated ? 'animated' as const : 'static' as const,
+    mimeType: animated ? 'image/gif' : 'image/png',
+    locator: {
+      kind: 'market' as const, packageId: '11690', stickerId, name: stickerId,
+      key: `key-${stickerId}`, width: 200, height: 200, animated,
+      staticPath: `/qq/Thumb/${stickerId}.png`,
+    },
+  })
+  const favoriteCopy = () => ({
+    providerId: 'qq/source:stickers', stickerId: 'market:238274:copy', packId: '238274',
+    format: 'static' as const, mimeType: 'image/png',
+    locator: {
+      kind: 'favorite' as const, resId: '1715311957_0_0_1_AB', path: '', name: 'copy', animated: false,
+    },
+  })
+  const sysface = () => ({
+    providerId: 'qq/source:stickers', stickerId: 'sysface:476', format: 'animated' as const,
+    mimeType: 'image/png',
+    locator: { kind: 'sysface' as const, faceId: '476', faceType: 3, name: 'face', animated: true },
+  })
+
+  it('saves only the references another QQ account can resolve itself', async () => {
+    const client = { setSavedSticker: vi.fn(async () => {}) }
+    const logger = { warn: vi.fn() }
+    const provider = new QQStickerProvider(client as never, 'qq/other:stickers', undefined, logger)
+    const deferred = { ...market('deferred'), locator: { ...market('deferred').locator, deferred: true as const } }
+    const imported = {
+      providerId: 'importer', stickerId: 'imported-one', format: 'static' as const,
+      mimeType: 'image/webp', locator: { fileId: 'file-one' },
+    }
+
+    await expect(provider.saveStickers(context, [
+      market('first'), favoriteCopy(), sysface(), deferred, imported, market('second', true),
+    ])).resolves.toEqual({ saved: 3, skipped: 3, failed: 0, remaining: 0 })
+    expect(client.setSavedSticker.mock.calls).toEqual([
+      [expect.objectContaining({ kind: 'market', stickerId: 'first' }), true],
+      [expect.objectContaining({ kind: 'sysface', faceId: '476' }), true],
+      [expect.objectContaining({ kind: 'market', stickerId: 'second', animated: true }), true],
+    ])
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('bounds one request and reports the stickers left for the next one', async () => {
+    const client = { setSavedSticker: vi.fn(async () => {}) }
+    const provider = new QQStickerProvider(client as never, 'qq/other:stickers')
+
+    await expect(provider.saveStickers(
+      context,
+      [market('a'), market('b'), market('c'), favoriteCopy()],
+      { limit: 2 },
+    )).resolves.toEqual({ saved: 2, skipped: 1, failed: 0, remaining: 1 })
+    expect(client.setSavedSticker).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts a rejected native write without losing the rest of the pack', async () => {
+    const client = {
+      setSavedSticker: vi.fn(async (reference: { stickerId: string }) => {
+        if (reference.stickerId === 'bad') throw new Error('QQ rejected the favorite')
+      }),
+    }
+    const logger = { warn: vi.fn() }
+    const provider = new QQStickerProvider(client as never, 'qq/other:stickers', undefined, logger)
+
+    await expect(provider.saveStickers(context, [market('bad'), market('good')]))
+      .resolves.toEqual({ saved: 1, skipped: 0, failed: 1, remaining: 0 })
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not save QQ sticker %s'),
+      'bad', 1, 2, 'QQ rejected the favorite',
+    )
+  })
+})
+
+
 function marketFavorite(favoriteResId: string): WireSticker {
   return {
     stickerId: 'market:238274:490c04c6a1f7e807648971001edc02ec', packId: '238274', title: '抱头蹲防',

@@ -64,6 +64,23 @@ export interface StickerDashboardAssignment {
    * the target client, so the dashboard surfaces the reason instead.
    */
   sendable: boolean
+  /**
+   * Whether this account can mirror the pack into the collection it owns, which
+   * is what makes a pack it cannot send sendable after all.
+   */
+  saveable: boolean
+}
+
+/** Outcome of mirroring one pack into an account's own sticker collection. */
+export interface StickerPackSaveResult {
+  /** Stickers the platform accepted into the account's own collection. */
+  saved: number
+  /** Stickers whose reference belongs to another account and cannot be moved. */
+  skipped: number
+  /** Stickers the platform rejected. */
+  failed: number
+  /** Stickers left for a later call because the request hit its limit. */
+  remaining: number
 }
 
 export interface StickerDashboardPack {
@@ -88,6 +105,12 @@ export interface StickerPackDashboardData {
     packId: string,
     assigned: boolean,
   ): Promise<void>
+  /** Mirror a pack into the collection the account owns (QQ: 收藏表情). */
+  saveStickerPackToAccount(
+    platformSessionId: string,
+    providerId: string,
+    packId: string,
+  ): Promise<StickerPackSaveResult>
 }
 
 /** A bridge-owned bot that can be opened through a Telegram `t.me` link. */

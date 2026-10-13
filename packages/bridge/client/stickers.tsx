@@ -1,6 +1,9 @@
 /** @jsxImportSource solid-js */
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
-import type { StickerPackDashboardData } from '../src/dashboard-types.js'
+import type {
+  StickerPackDashboardData,
+  StickerPackSaveResult,
+} from '../src/dashboard-types.js'
 import { useRpc, type PageProps } from 'cordis-webui-solidjs/client'
 import { Icon } from 'cordis-webui-solidjs/icons'
 import {
@@ -15,7 +18,8 @@ export default function StickersPage(props: PageProps) {
     action = useAction()
   const [selected, setSelected] = createSignal(''),
     [search, setSearch] = createSignal(''),
-    [page, setPage] = createSignal(0)
+    [page, setPage] = createSignal(0),
+    [saved, setSaved] = createSignal<Record<string, StickerPackSaveResult>>({})
   createEffect(() => {
     if (
       rpc.ready &&
@@ -117,7 +121,25 @@ export default function StickersPage(props: PageProps) {
                         pack().sourcePlatformSessionId,
                     ),
                   sendable = () => assignment()?.sendable !== false,
-                  removable = () => Boolean(assignment()?.assigned)
+                  saveable = () => assignment()?.saveable === true,
+                  // A pack this account cannot send but can collect is worth
+                  // saving; that native collection is what makes it sendable.
+                  saveableAction = () =>
+                    !sendable() && saveable() && !assignment()?.automatic,
+                  removable = () => Boolean(assignment()?.assigned),
+                  savedKey = () =>
+                    [selected(), pack().providerId, pack().packId].join('|'),
+                  saveResult = () => saved()[savedKey()],
+                  save = () =>
+                    void action.run(async () => {
+                      const result = await rpc.data.saveStickerPackToAccount(
+                        selected(),
+                        pack().providerId,
+                        pack().packId,
+                      )
+                      setSaved((value) => ({ ...value, [savedKey()]: result }))
+                      await rpc.data.refreshStickerPacks()
+                    })
                 return (
                   <article
                     class="panel sticker-card"
@@ -148,52 +170,96 @@ export default function StickersPage(props: PageProps) {
                         <span class="chip">Cannot send here</span>
                       </Show>
                     </div>
-                    <button
-                      class={
-                        'button ' +
-                        (assignment()?.assigned ? 'tonal' : 'outlined')
-                      }
-                      disabled={
-                        !rpc.ready ||
-                        action.busy() ||
-                        assignment()?.automatic ||
-                        (!sendable() && !removable())
-                      }
-                      aria-label={
-                        (assignment()?.automatic
-                          ? 'Automatically assigned '
-                          : !sendable()
-                            ? removable()
-                              ? 'Remove '
-                              : 'Cannot send '
-                            : assignment()?.assigned
-                              ? 'Remove '
-                              : 'Add ') + pack().title
-                      }
-                      onClick={() => {
-                        const accountId = selected(),
-                          value = pack(),
-                          assigned = !assignment()?.assigned
-                        void action.run(() =>
-                          rpc.data.setStickerPackAssigned(
-                            accountId,
-                            value.providerId,
-                            value.packId,
-                            assigned,
-                          ),
-                        )
-                      }}
-                    >
-                      {assignment()?.automatic
-                        ? 'Automatically assigned'
-                        : !sendable()
-                          ? removable()
-                            ? 'Not sendable · remove'
-                            : 'Cannot send on this account'
-                          : assignment()?.assigned
-                            ? 'Added · remove'
-                            : 'Add to account'}
-                    </button>
+                    <div class="sticker-actions">
+                      <button
+                        class={
+                          'button ' +
+                          (assignment()?.assigned && !saveableAction()
+                            ? 'tonal'
+                            : 'outlined')
+                        }
+                        disabled={
+                          !rpc.ready ||
+                          action.busy() ||
+                          assignment()?.automatic ||
+                          (!sendable() && !removable() && !saveableAction())
+                        }
+                        aria-label={
+                          (assignment()?.automatic
+                            ? 'Automatically assigned '
+                            : saveableAction()
+                              ? 'Save '
+                              : !sendable()
+                                ? removable()
+                                  ? 'Remove '
+                                  : 'Cannot send '
+                                : assignment()?.assigned
+                                  ? 'Remove '
+                                  : 'Add ') + pack().title
+                        }
+                        onClick={() => {
+                          if (saveableAction()) return save()
+                          const accountId = selected(),
+                            value = pack(),
+                            assigned = !assignment()?.assigned
+                          void action.run(() =>
+                            rpc.data.setStickerPackAssigned(
+                              accountId,
+                              value.providerId,
+                              value.packId,
+                              assigned,
+                            ),
+                          )
+                        }}
+                      >
+                        {assignment()?.automatic
+                          ? 'Automatically assigned'
+                          : saveableAction()
+                            ? 'Save to this account'
+                            : !sendable()
+                              ? removable()
+                                ? 'Not sendable · remove'
+                                : 'Cannot send on this account'
+                              : assignment()?.assigned
+                                ? 'Added · remove'
+                                : 'Add to account'}
+                      </button>
+                      <Show when={saveableAction() && removable()}>
+                        <button
+                          class="button outlined"
+                          disabled={!rpc.ready || action.busy()}
+                          aria-label={'Remove ' + pack().title}
+                          onClick={() => {
+                            const accountId = selected(),
+                              value = pack()
+                            void action.run(() =>
+                              rpc.data.setStickerPackAssigned(
+                                accountId,
+                                value.providerId,
+                                value.packId,
+                                false,
+                              ),
+                            )
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </Show>
+                    </div>
+                    <Show when={saveResult()}>
+                      {(result) => (
+                        <p class="sticker-save-result">
+                          Saved {result().saved} · already owned{' '}
+                          {result().skipped}
+                          {result().failed
+                            ? ' · failed ' + result().failed
+                            : ''}
+                          {result().remaining
+                            ? ' · ' + result().remaining + ' left'
+                            : ''}
+                        </p>
+                      )}
+                    </Show>
                   </article>
                 )
               }}

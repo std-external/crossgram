@@ -48,7 +48,8 @@ import {
 import { BlockedPeerStore, type BlockedContentMode } from './blocked-peers.js'
 import { DialogFolderStore } from './dialog-folders.js'
 import {
-  collectStickerDashboard, setStickerPackAssignment, STICKER_PACK_UNSENDABLE_MESSAGE,
+  collectStickerDashboard, saveStickerPackToAccount, setStickerPackAssignment,
+  STICKER_PACK_UNSENDABLE_MESSAGE,
   type StickerDashboardPack, type StickerDashboardSourceAccount, type StickerPackDashboardData,
 } from './sticker-dashboard.js'
 import { CallRegistry, type VoiceMediaStartProvider, type VoiceWorkerClient } from './voice/call-registry.js'
@@ -583,6 +584,11 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       await setStickerPackAssignment(ctx.database, platformSessionId, providerId, packId, assigned)
       await publishStickerPacks()
     },
+    async saveStickerPackToAccount(platformSessionId, providerId, packId) {
+      const result = await saveStickerPack(platformSessionId, providerId, packId)
+      await publishStickerPacks()
+      return result
+    },
     async setLoginPassword(platformId, password) {
       const [auth] = await ctx.database.get('mtproto_auth_session', { platformId })
       if (!auth) throw new Error('目标账号不存在，请刷新后重试。')
@@ -645,6 +651,32 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       value.stickerAccounts = snapshot.accounts
       value.stickerPacks = snapshot.packs
     })
+  }
+
+  /**
+   * Mirrors one pack into the collection the target account owns. The stickers
+   * are read through the account that exposes the pack and written through the
+   * account that collects them, so nothing has to be copied between sessions.
+   */
+  const saveStickerPack = async (
+    platformSessionId: string,
+    providerId: string,
+    packId: string,
+  ) => {
+    const pack = publishedStickerPacks.find(item =>
+      item.providerId === providerId && item.packId === packId)
+    if (!pack) throw new Error('表情包不存在，请刷新后重试。')
+    const accounts = stickerSourceAccounts()
+    const source = accounts.find(item => item.view.platformId === pack.sourcePlatformId)
+    const account = accounts.find(item => item.view.platformSessionId === platformSessionId)
+    if (!source || !account) throw new Error('目标账号不存在，请刷新后重试。')
+    const { saverProviderId, summary } = await saveStickerPackToAccount(
+      stickerProviders.registry,
+      { providerId, packId, source, account },
+    )
+    // The catalog of the account that collected the stickers changed.
+    ctx.imSticker.touch(saverProviderId, platformSessionId)
+    return summary
   }
 
   const publishBots = async (now = Date.now()) => {
@@ -720,6 +752,18 @@ export function apply(ctx: Context, config: BridgeConfig = {}): void {
       }
       await setStickerPackAssignment(ctx.database, platformSessionId, providerId, packId, assigned)
       await publishStickerPacks()
+    },
+    saveStickerPackToAccount: async (platformSessionId, providerId, packId) => {
+      try {
+        const result = await saveStickerPack(platformSessionId, providerId, packId)
+        await publishStickerPacks()
+        return result
+      } catch (error) {
+        throw new BridgeManagementError(
+          'STICKER_PACK_SAVE_UNSUPPORTED',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
     },
   })
 

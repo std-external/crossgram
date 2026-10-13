@@ -222,6 +222,17 @@
   .sticker-card .chip {
     font-size: 11px;
   }
+  .sticker-card .sticker-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .sticker-card .sticker-actions .button {
+    flex: 1 1 auto;
+  }
+  .sticker-card .sticker-save-result {
+    margin-top: 4px;
+  }
 
   .bot-card {
     display: flex;

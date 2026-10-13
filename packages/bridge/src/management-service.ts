@@ -1,7 +1,9 @@
 import { Service, type Context } from 'cordis'
 import type { CrossGramServerConfig, PlatformAccountView } from './account-dashboard.js'
 import type { PlatformSession } from './platform.js'
-import type { StickerDashboardAccount, StickerDashboardPack } from './sticker-dashboard.js'
+import type {
+  StickerDashboardAccount, StickerDashboardPack, StickerPackSaveResult,
+} from './sticker-dashboard.js'
 
 export interface BridgeManagementRuntimeStatus {
   generatedAt: number
@@ -76,6 +78,7 @@ export type BridgeManagementErrorCode =
   | 'STICKER_ACCOUNT_NOT_FOUND'
   | 'STICKER_ASSIGNMENT_AUTOMATIC'
   | 'STICKER_PACK_UNSENDABLE'
+  | 'STICKER_PACK_SAVE_UNSUPPORTED'
 
 export class BridgeManagementError extends Error {
   constructor(readonly code: BridgeManagementErrorCode, message: string = code) {
@@ -99,6 +102,11 @@ export interface BridgeManagementSource {
     packId: string,
     assigned: boolean,
   ): Promise<void>
+  saveStickerPackToAccount(
+    platformSessionId: string,
+    providerId: string,
+    packId: string,
+  ): Promise<StickerPackSaveResult>
 }
 
 /**
@@ -254,6 +262,14 @@ export class BridgeManagementService extends Service {
     assigned: boolean,
   ): Promise<void> {
     await this._requireSource().setStickerPackAssigned(platformSessionId, providerId, packId, assigned)
+  }
+
+  async saveStickerPackToAccount(
+    platformSessionId: string,
+    providerId: string,
+    packId: string,
+  ): Promise<StickerPackSaveResult> {
+    return this._requireSource().saveStickerPackToAccount(platformSessionId, providerId, packId)
   }
 
   private _requireSource(): BridgeManagementSource {

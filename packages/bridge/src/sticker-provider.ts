@@ -115,6 +115,18 @@ export interface StickerProviderCapabilities {
   canonicalLookup?: boolean
 }
 
+/** Outcome of mirroring stickers into an account's own platform collection. */
+export interface IMStickerSaveSummary {
+  /** Stickers the platform accepted into the account's own collection. */
+  saved: number
+  /** Stickers whose reference belongs to another account and cannot be moved. */
+  skipped: number
+  /** Stickers the platform rejected. */
+  failed: number
+  /** Stickers left for a later call because the request hit its limit. */
+  remaining: number
+}
+
 export interface IMStickerProvider {
   readonly capabilities?: StickerProviderCapabilities
 
@@ -144,12 +156,25 @@ export interface IMStickerProvider {
     context: StickerProviderContext,
     sticker: IMSticker,
   ): Promise<IMStickerSendPlan | null>
-  /** Mirror Telegram's favorite toggle into the platform-native saved collection. */
+  /**
+   * Mirror Telegram's favorite toggle into the platform-native saved collection.
+   */
   setSavedSticker?(
     context: StickerProviderContext,
     sticker: IMSticker,
     saved: boolean,
   ): Promise<void>
+  /**
+   * Mirror several stickers into the account's own native collection in one
+   * operation, which is what lets an account send stickers another account's
+   * pack exposed: the platform only ever sends what its own collection serves.
+   * Providers report the stickers they cannot move instead of dropping them.
+   */
+  saveStickers?(
+    context: StickerProviderContext,
+    stickers: readonly IMSticker[],
+    options?: { limit?: number },
+  ): Promise<IMStickerSaveSummary>
 }
 
 export class StickerProviderRegistry {

@@ -32,7 +32,8 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
       const tokenUrl =
           'tg://login?token=' + Buffer.from(issued).toString('base64url'),
         approvals: unknown[] = [],
-        assignments: unknown[][] = []
+        assignments: unknown[][] = [],
+        saves: unknown[][] = []
       ctx.server.post('/bridge/login-tokens/:platform/approve', async (req) => {
         const body = await req.json(),
           token = parseTelegramLoginToken(body.token)
@@ -115,14 +116,17 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
               assigned: id === 0,
               automatic: id === 0,
               sendable: true,
+              saveable: false,
             },
             {
               platformSessionId: 'matrix-session',
               assigned: false,
               automatic: false,
-              // Collection 2 only exists on the QQ account, and Matrix cannot
-              // upload sticker assets, so the dashboard must refuse it there.
-              sendable: id !== 2,
+              // Collections 2 and 3 only exist on the QQ account, and Matrix
+              // cannot upload sticker assets, so it cannot send them; 3 can
+              // still be mirrored into the account's own collection.
+              sendable: id !== 2 && id !== 3,
+              saveable: id === 3,
             },
           ],
         })),
@@ -143,6 +147,10 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
         async refreshBots() {},
         async refreshStickerPacks() {},
         async setLoginPassword() {},
+        async saveStickerPackToAccount(account, provider, pack) {
+          saves.push([account, provider, pack])
+          return { saved: 20, skipped: 0, failed: 0, remaining: 0 }
+        },
         async setStickerPackAssigned(account, provider, pack, assigned) {
           assignments.push([account, provider, pack, assigned])
           entry.mutate((value) => {
@@ -310,6 +318,18 @@ describe('Crossgram accounts, stickers and bots in the Solid shell', () => {
           })
           .isDisabled(),
       ).toBe(true)
+      // Collection 3 cannot be sent either, but the account can collect it.
+      await page
+        .getByRole('button', { name: 'Save Collection 3', exact: true })
+        .click()
+      await page
+        .getByText('Saved 20 · already owned 0', { exact: false })
+        .waitFor()
+      expect(saves.at(-1)).toEqual([
+        'matrix-session',
+        'provider',
+        '3',
+      ])
       await page
         .getByRole('button', { name: 'Add Collection 1', exact: true })
         .click()

@@ -1,11 +1,15 @@
 import type { Database } from '@cordisjs/plugin-database'
 import type { PlatformCapabilities, PlatformSession } from './platform.js'
 import type {
-  IMStickerPackSummary, IMStickerProvider, StickerProviderContext, StickerProviderRegistry,
+  IMStickerPackSummary, IMStickerProvider, IMStickerSaveSummary,
+  StickerProviderContext, StickerProviderRegistry,
 } from './sticker-provider.js'
 
 import type { StickerDashboardAccount, StickerDashboardPack } from './dashboard-types.js'
-export type { StickerDashboardAccount, StickerDashboardAssignment, StickerDashboardPack, StickerPackDashboardData } from './dashboard-types.js'
+export type {
+  StickerDashboardAccount, StickerDashboardAssignment, StickerDashboardPack,
+  StickerPackDashboardData, StickerPackSaveResult,
+} from './dashboard-types.js'
 
 export interface StickerDashboardSourceAccount {
   view: StickerDashboardAccount
@@ -37,6 +41,63 @@ export function canSendStickerPacks(
 /** Refusal message for linking a pack the target account can never send. */
 export const STICKER_PACK_UNSENDABLE_MESSAGE =
   '该账号无法发送这个表情包，请改用来自该账号自己的表情包。'
+
+/** Refusal message for saving a pack into an account that cannot collect it. */
+export const STICKER_PACK_SAVE_UNSUPPORTED_MESSAGE =
+  '该账号的平台没有收藏表情包的能力，请在该账号自己的客户端里收藏。'
+
+/**
+ * How many stickers one save request mirrors. Every sticker is a native
+ * platform write, so the request stays bounded and reports what is left.
+ */
+export const STICKER_PACK_SAVE_LIMIT = 100
+
+/**
+ * The provider that can write to an account's own native collection. Only a
+ * provider the account owns may touch it, and only platforms that implement
+ * `saveStickers()` have such a collection at all.
+ */
+export function accountStickerSaver(
+  registry: StickerProviderRegistry,
+  account: { platformId: string, platformKind: string },
+): [string, IMStickerProvider] | undefined {
+  return registry.entries.find(([, provider]) =>
+    providerBelongsToAccount(provider, account.platformId, account.platformKind)
+    && typeof provider.saveStickers === 'function')
+}
+
+/**
+ * Mirrors one pack into an account's own collection, so the account can send
+ * those stickers itself instead of depending on the source account.
+ */
+export async function saveStickerPackToAccount(
+  registry: StickerProviderRegistry,
+  input: {
+    providerId: string
+    packId: string
+    source: StickerDashboardSourceAccount
+    account: StickerDashboardSourceAccount
+    limit?: number
+  },
+): Promise<{ saverProviderId: string, summary: IMStickerSaveSummary }> {
+  const source = registry.get(input.providerId)
+  if (!source) throw new Error('表情包不存在，请刷新后重试。')
+  const saver = accountStickerSaver(registry, {
+    platformId: input.account.view.platformId,
+    platformKind: input.account.view.platformKind,
+  })
+  if (!saver) throw new Error(STICKER_PACK_SAVE_UNSUPPORTED_MESSAGE)
+  const pack = await source.getPack(providerContext(input.source), input.packId)
+  if (!pack) throw new Error('表情包不存在，请刷新后重试。')
+  // The pack is read through the account that exposes it and written through
+  // the account that collects it: each provider sees its own session.
+  const summary = await saver[1].saveStickers!(
+    providerContext(input.account),
+    pack.stickers,
+    { limit: input.limit ?? STICKER_PACK_SAVE_LIMIT },
+  )
+  return { saverProviderId: saver[0], summary }
+}
 
 export async function collectStickerDashboard(
   database: Database,
@@ -70,6 +131,11 @@ export async function collectStickerDashboard(
             assigned: automatic || !!row && !row.uninstalled,
             sendable: canSendStickerPacks(provider, {
               platformId: view.platformId, platformKind: view.platformKind, capabilities,
+            }),
+            // The account can mirror this pack into the platform collection it
+            // owns, which is how a pack it cannot send still becomes sendable.
+            saveable: !!accountStickerSaver(registry, {
+              platformId: view.platformId, platformKind: view.platformKind,
             }),
           }
         }),

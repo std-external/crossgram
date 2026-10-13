@@ -418,6 +418,14 @@ adapter 只负责执行最终 native/upload 输入，不实现 Telegram sticker 
 pack。session-scoped provider（`ownerPlatformId`）的 pack 属于它自己的账号；另一个账号要用同一套表情包时，
 应关联来自它自己 catalog 的同一 pack，否则客户端只会看到一批点下去就报 `STICKER_SEND_UNAVAILABLE` 的表情。
 
+平台可以额外实现 `saveStickers(context, stickers, { limit })`（见 `IMStickerSaveSummary`），把自己看得见的
+贴纸写进**该账号自己的原生收藏**，这是让「别的账号收藏这套表情包」成为可能的那一步：bridge 通过源账号读出
+pack 的贴纸，再交给目标账号自己的 provider 落库（QQ 是 `POST /stickers/saved`，即 `收藏表情`；WebUI 的
+「Save to this account」、`BridgeManagementService.saveStickerPackToAccount()`）。QQ 没有「把一个表情包加入
+我的面板」的接口，所以只能逐张贴纸收藏，且只有与账号无关的引用（商店表情 `market`、系统表情 `sysface`）可
+迁移：收藏副本的 res id 里带着原账号的 uin，导入的 Telegram 贴纸没有 QQ 原生引用，两者都会被记为 `skipped`。
+provider 必须如实回填 `saved/skipped/failed/remaining`，bridge 不做静默丢弃。
+
 ### 群文件
 
 平台可选实现 `listGroupFiles(session, conversation, { folderId, cursor, limit })`，返回原生群文件夹和文件。

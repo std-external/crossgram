@@ -36,6 +36,7 @@ async function createFixture() {
   const refreshStickers = vi.fn(async () => {})
   const approveLoginToken = vi.fn()
   const setStickerPackAssigned = vi.fn(async () => {})
+  const saveStickerPackToAccount = vi.fn(async () => ({ saved: 2, skipped: 1, failed: 0, remaining: 0 }))
   const source: BridgeManagementSource = {
     serverConfig: () => ({
       name: 'CrossGram', enable_special_config: false, host: 'relay.example.com', port: 4430,
@@ -66,20 +67,24 @@ async function createFixture() {
       packs: [{
         providerId: 'qq-main', packId: 'pack-one', title: '收藏',
         assignments: [
-          { platformSessionId: 'session-a', assigned: true, automatic: false, sendable: true },
-          { platformSessionId: 'session-b', assigned: false, automatic: false, sendable: false },
+          { platformSessionId: 'session-a', assigned: true, automatic: false, sendable: true, saveable: false },
+          { platformSessionId: 'session-b', assigned: false, automatic: false, sendable: false, saveable: true },
         ],
       }],
       updatedAt: 42,
     }),
     refreshStickers,
     setStickerPackAssigned,
+    saveStickerPackToAccount,
   }
   const service = new BridgeManagementService(ctx, source)
   disposals.push(async () => {
     for (const fiber of fibers.reverse()) await fiber.dispose()
   })
-  return { ctx, service, refresh, refreshStickers, approveLoginToken, setStickerPackAssigned }
+  return {
+    ctx, service, refresh, refreshStickers, approveLoginToken, setStickerPackAssigned,
+    saveStickerPackToAccount,
+  }
 }
 
 async function seed(ctx: Context) {
@@ -145,6 +150,7 @@ describe('BridgeManagementService', () => {
       packs: [expect.objectContaining({
         packId: 'pack-one', assignments: [{
           platformSessionId: 'session-a', assigned: true, automatic: false, sendable: true,
+          saveable: false,
         }],
       })],
       updatedAt: 42,
@@ -164,6 +170,8 @@ describe('BridgeManagementService', () => {
     await fixture.service.refreshStickers()
     fixture.service.approveLoginToken('qq-main', 'token')
     await fixture.service.setStickerPackAssigned('session-a', 'qq-main', 'pack-one', false)
+    await expect(fixture.service.saveStickerPackToAccount('session-a', 'qq-main', 'pack-one'))
+      .resolves.toEqual({ saved: 2, skipped: 1, failed: 0, remaining: 0 })
 
     expect(fixture.refresh).toHaveBeenCalledOnce()
     expect(fixture.refreshStickers).toHaveBeenCalledOnce()
@@ -171,5 +179,6 @@ describe('BridgeManagementService', () => {
     expect(fixture.setStickerPackAssigned).toHaveBeenCalledWith(
       'session-a', 'qq-main', 'pack-one', false,
     )
+    expect(fixture.saveStickerPackToAccount).toHaveBeenCalledWith('session-a', 'qq-main', 'pack-one')
   })
 })

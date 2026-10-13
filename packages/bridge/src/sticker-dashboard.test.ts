@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  canSendStickerPacks, collectStickerDashboard, providerBelongsToAccount, setStickerPackAssignment,
+  canSendStickerPacks, collectStickerDashboard, providerBelongsToAccount, saveStickerPackToAccount,
+  setStickerPackAssignment, STICKER_PACK_SAVE_LIMIT, STICKER_PACK_SAVE_UNSUPPORTED_MESSAGE,
 } from './sticker-dashboard.js'
 import type { IMStickerProvider, StickerProviderRegistry } from './sticker-provider.js'
 import type { PlatformCapabilities, PlatformSession } from './platform.js'
@@ -54,13 +55,13 @@ describe('Bridge sticker pack dashboard', () => {
     const favorites = result.packs.find(pack => pack.packId === 'qq-favorites')!
     expect(favorites.sourcePlatformId).toBe('qq/primary')
     expect(favorites.assignments).toEqual([
-      { platformSessionId: 'qq-session', automatic: true, assigned: true, sendable: true },
+      { platformSessionId: 'qq-session', automatic: true, assigned: true, sendable: true, saveable: false },
       // A platform that uploads sticker assets can send any provider's pack.
-      { platformSessionId: 'static-session', automatic: false, assigned: false, sendable: true },
+      { platformSessionId: 'static-session', automatic: false, assigned: false, sendable: true, saveable: false },
     ])
     expect(result.packs.find(pack => pack.packId === 'market-1')!.assignments).toEqual([
-      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true },
-      { platformSessionId: 'static-session', automatic: false, assigned: true, sendable: true },
+      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true, saveable: false },
+      { platformSessionId: 'static-session', automatic: false, assigned: true, sendable: true, saveable: false },
     ])
     expect(qqProvider.listPacks).toHaveBeenCalledWith(
       expect.objectContaining({ session: qqSession, platformKind: 'qq' }),
@@ -99,12 +100,13 @@ describe('Bridge sticker pack dashboard', () => {
 
     const primaryPack = result.packs.find(pack => pack.providerId === 'qq/primary:stickers')!
     expect(primaryPack.assignments).toEqual([
-      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true },
-      { platformSessionId: 'qq-second-session', automatic: false, assigned: true, sendable: false },
+      { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true, saveable: false },
+      { platformSessionId: 'qq-second-session', automatic: false, assigned: true, sendable: false, saveable: false },
     ])
     const ownPack = result.packs.find(pack => pack.providerId === 'qq/secondary:stickers')!
     expect(ownPack.assignments[1]).toEqual({
       platformSessionId: 'qq-second-session', automatic: false, assigned: false, sendable: true,
+      saveable: false,
     })
   })
 
@@ -134,6 +136,102 @@ describe('Bridge sticker pack dashboard', () => {
     expect(canSendStickerPacks(sharedProvider, {
       platformId: 'static/demo', platformKind: 'static', capabilities: staticCapabilities,
     })).toBe(true)
+  })
+
+  it('reports which accounts can mirror a foreign pack into their own collection', async () => {
+    const sourceProvider = provider('qq/primary', [
+      { providerId: 'ignored', packId: 'market-1', title: 'QQ 商店包', count: 2 },
+    ], 'qq')
+    const collector = saver('qq/secondary')
+    const registry = stickerRegistry([
+      ['qq/primary:stickers', sourceProvider],
+      ['qq/secondary:stickers', collector.provider],
+      ['static/demo:stickers', provider('static/demo', [], 'static')],
+    ])
+    const secondarySession = {
+      platformId: 'qq/secondary', platformSessionId: 'qq-second-session', userId: '10002',
+      credentials: {}, metadata: {},
+    } as PlatformSession
+    const database = { get: vi.fn(async () => []) }
+
+    const result = await collectStickerDashboard(database as never, registry, [
+      source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+      source(secondarySession, 'qq', 'QQ Bob', qqCapabilities),
+      source(staticSession, 'static', 'Static Demo', staticCapabilities),
+    ])
+
+    // Only the account whose own provider implements saveStickers() can collect
+    // a pack another account exposes.
+    expect(result.packs.find(pack => pack.providerId === 'qq/primary:stickers')!.assignments)
+      .toEqual([
+        { platformSessionId: 'qq-session', automatic: false, assigned: false, sendable: true, saveable: false },
+        {
+          platformSessionId: 'qq-second-session', automatic: false, assigned: false, sendable: false,
+          saveable: true,
+        },
+        {
+          platformSessionId: 'static-session', automatic: false, assigned: false, sendable: true,
+          saveable: false,
+        },
+      ])
+  })
+
+  it('mirrors a pack through the collection of the account that collects it', async () => {
+    const stickers = [
+      { providerId: 'qq/primary:stickers', stickerId: 'market:11690:a', packId: '11690', format: 'static' as const, mimeType: 'image/png' },
+      { providerId: 'qq/primary:stickers', stickerId: 'market:11690:b', packId: '11690', format: 'static' as const, mimeType: 'image/png' },
+    ]
+    const sourceProvider = provider('qq/primary', [
+      { providerId: 'ignored', packId: 'market-1', title: 'QQ 商店包', count: 2 },
+    ], 'qq')
+    sourceProvider.getPack = vi.fn(async () => ({
+      providerId: 'qq/primary:stickers', packId: 'market-1', title: 'QQ 商店包', stickers,
+    }))
+    const collector = saver('qq/secondary')
+    const registry = stickerRegistry([
+      ['qq/primary:stickers', sourceProvider],
+      ['qq/secondary:stickers', collector.provider],
+    ])
+    const secondarySession = {
+      platformId: 'qq/secondary', platformSessionId: 'qq-second-session', userId: '10002',
+      credentials: {}, metadata: {},
+    } as PlatformSession
+    const sourceAccount = source(qqSession, 'qq', 'QQ Alice', qqCapabilities)
+
+    const result = await saveStickerPackToAccount(registry, {
+      providerId: 'qq/primary:stickers',
+      packId: 'market-1',
+      source: sourceAccount,
+      account: source(secondarySession, 'qq', 'QQ Bob', qqCapabilities),
+    })
+
+    expect(result).toEqual({
+      saverProviderId: 'qq/secondary:stickers',
+      summary: { saved: 2, skipped: 0, failed: 0, remaining: 0 },
+    })
+    expect(collector.saveStickers).toHaveBeenCalledWith(
+      { session: secondarySession, platformKind: 'qq' },
+      stickers,
+      { limit: STICKER_PACK_SAVE_LIMIT },
+    )
+  })
+
+  it('refuses to mirror a pack into an account whose platform cannot collect', async () => {
+    const registry = stickerRegistry([['qq/primary:stickers', provider('qq/primary', [])]])
+
+    await expect(saveStickerPackToAccount(registry, {
+      providerId: 'qq/primary:stickers',
+      packId: 'market-1',
+      source: source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+      account: source(staticSession, 'static', 'Static Demo', staticCapabilities),
+    })).rejects.toThrow(STICKER_PACK_SAVE_UNSUPPORTED_MESSAGE)
+
+    await expect(saveStickerPackToAccount(registry, {
+      providerId: 'missing:stickers',
+      packId: 'market-1',
+      source: source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+      account: source(qqSession, 'qq', 'QQ Alice', qqCapabilities),
+    })).rejects.toThrow('表情包不存在，请刷新后重试。')
   })
 
   it('loads every provider page and rejects repeated cursors', async () => {
@@ -202,8 +300,21 @@ function provider(
   }
 }
 
+/** A provider of a platform that can mirror packs into its own collection. */
+function saver(ownerPlatformId: string, kind = 'qq') {
+  const saveStickers = vi.fn(async (
+    _context: unknown,
+    stickers: readonly unknown[],
+    _options?: unknown,
+  ) => ({ saved: stickers.length, skipped: 0, failed: 0, remaining: 0 }))
+  return { saveStickers, provider: { ...provider(ownerPlatformId, [], kind), saveStickers } as IMStickerProvider }
+}
+
 function stickerRegistry(entries: Array<[string, IMStickerProvider]>): StickerProviderRegistry {
-  return { entries } as unknown as StickerProviderRegistry
+  return {
+    entries,
+    get: (id: string) => entries.find(([providerId]) => providerId === id)?.[1],
+  } as unknown as StickerProviderRegistry
 }
 
 function source(

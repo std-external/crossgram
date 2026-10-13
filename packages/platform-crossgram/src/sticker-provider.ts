@@ -1,5 +1,5 @@
 import type {
-  IMSticker, IMStickerAsset, IMStickerPack, IMStickerProvider, JsonValue,
+  IMSticker, IMStickerAsset, IMStickerPack, IMStickerProvider, IMStickerSaveSummary, JsonValue,
   StickerPageQuery, StickerProviderContext,
 } from '@mtproto-relay/bridge'
 import type { QQNTClient } from './client.js'
@@ -125,6 +125,52 @@ export class QQStickerProvider implements IMStickerProvider {
     const reference = sticker.locator as unknown as QQStickerReference | undefined
     if (!reference) throw new Error(`QQ sticker ${sticker.stickerId} has no native reference`)
     await this.client.setSavedSticker(reference, saved)
+  }
+
+  /**
+   * Adds another account's stickers to this account's QQ favorite collection
+   * (`收藏表情`), the only QQ collection the relay can write to: QQ's own panel
+   * has no "add this pack" call. Only references QQ resolves from the face
+   * itself can move between accounts — a favorite copy belongs to the account
+   * that saved it (`<uin>_…` res id), and an imported Telegram document has no
+   * QQ expression at all.
+   */
+  async saveStickers(
+    _context: StickerProviderContext,
+    stickers: readonly IMSticker[],
+    options: { limit?: number } = {},
+  ): Promise<IMStickerSaveSummary> {
+    const portable: QQStickerReference[] = []
+    let skipped = 0
+    for (const sticker of stickers) {
+      const reference = sticker.locator as unknown as QQStickerReference | undefined
+      if (!reference?.kind || reference.deferred
+        || (reference.kind !== 'market' && reference.kind !== 'sysface')) {
+        skipped++
+        continue
+      }
+      portable.push(reference)
+    }
+    const limit = Math.max(0, options.limit ?? portable.length)
+    const accepted = portable.slice(0, limit)
+    let saved = 0
+    let failed = 0
+    for (const [index, reference] of accepted.entries()) {
+      try {
+        // One native QQ write per sticker, in order: the relay's market path is
+        // serialized by the bridge, and a batch must not queue behind itself.
+        await this.client.setSavedSticker(reference, true)
+        saved++
+      } catch (error) {
+        failed++
+        this.logger?.warn(
+          'Could not save QQ sticker %s into the account collection (%d/%d): %s',
+          reference.name ?? String(index), index + 1, accepted.length,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
+    return { saved, skipped, failed, remaining: portable.length - accepted.length }
   }
 
   private async mapPack(pack: WireStickerPack): Promise<IMStickerPack> {
