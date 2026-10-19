@@ -1762,6 +1762,62 @@ describe('conversation kinds', () => {
     expect(unmuted).toMatchObject({ participant: { _: 'channelParticipant' } })
   })
 
+  it('reads Telegram Desktop granular send restrictions as a mute', async () => {
+    const moderationCalls: Array<{ userId: string, action: unknown }> = []
+    const { rpc } = await createRpc({
+      ...platform,
+      async moderateConversationMember(_session, _conversation, userId, action) {
+        moderationCalls.push({ userId, action })
+      },
+    })
+    await rpc.getDialogs(dialogsRequest())
+    const channel = { _: 'inputChannel' as const, channelId: peerTlId('group'), accessHash: Long.ZERO }
+    await rpc.getChannelParticipants({
+      _: 'channels.getParticipants', channel,
+      filter: { _: 'channelParticipantsRecent' }, offset: 0, limit: 100, hash: Long.ZERO,
+    })
+    const bob = await rpc.userTlId('bob')
+    const restrict = (bannedRights: tl.RawChatBannedRights) => rpc.editChannelBanned({
+      _: 'channels.editBanned', channel,
+      participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
+      bannedRights,
+    })
+
+    // Telegram Desktop 的 Restrict 框只设置 `send_plain` 和各媒体位，从不设置旧的 `send_messages`。
+    const granular: tl.RawChatBannedRights = {
+      _: 'chatBannedRights',
+      sendPlain: true, sendPhotos: true, sendVideos: true, sendRoundvideos: true,
+      sendAudios: true, sendVoices: true, sendDocs: true, sendStickers: true,
+      sendGifs: true, sendGames: true, sendInline: true, embedLinks: true, sendPolls: true,
+      untilDate: 0,
+    }
+    const mute = await restrict(granular)
+    await restrict({ ...granular, untilDate: 1_900_000_000 })
+    expect(moderationCalls.slice(0, 2)).toEqual([
+      { userId: 'bob', action: { type: 'mute', untilDate: 0x7fff_ffff } },
+      { userId: 'bob', action: { type: 'mute', untilDate: 1_900_000_000 } },
+    ])
+    expect(mute).toMatchObject({
+      updates: [{
+        _: 'updateChannelParticipant',
+        newParticipant: { _: 'channelParticipantBanned', bannedRights: { sendMessages: true, sendPlain: true } },
+      }],
+    })
+    expect(await rpc.getChannelParticipant({
+      _: 'channels.getParticipant', channel,
+      participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
+    })).toMatchObject({
+      participant: { _: 'channelParticipantBanned', bannedRights: { untilDate: 1_900_000_000 } },
+    })
+    // 全部位都不带 = 解除禁言；`until_date` 已经过去也算解除。
+    await restrict({ _: 'chatBannedRights', untilDate: 0 })
+    await restrict({ _: 'chatBannedRights', sendPlain: true, untilDate: 1_000 })
+    expect(moderationCalls.slice(2)).toEqual([
+      { userId: 'bob', action: { type: 'unmute' } },
+      { userId: 'bob', action: { type: 'unmute' } },
+    ])
+  })
+
   it('serves channel-scoped message, chat-list, and read RPCs', async () => {
     const { rpc } = await createRpc()
     await rpc.getDialogs(dialogsRequest())

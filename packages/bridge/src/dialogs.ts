@@ -2089,7 +2089,7 @@ export class DialogRpc {
     const now = Math.floor(Date.now() / 1000)
     const action: IMConversationMemberModeration = rights.viewMessages
       ? { type: 'kick', rejectAddRequest: rights.untilDate === 0 }
-      : rights.sendMessages && (rights.untilDate === 0 || rights.untilDate > now)
+      : restrictsSending(rights) && (rights.untilDate === 0 || rights.untilDate > now)
         ? { type: 'mute', untilDate: rights.untilDate || 0x7fff_ffff }
         : { type: 'unmute' }
     await this._platform.moderateConversationMember(
@@ -6376,6 +6376,31 @@ export function makeDefaultBannedRights(readOnly = false): tl.RawChatBannedRight
 function makeMemberMuteRights(untilDate: number): tl.RawChatBannedRights {
   const rights = makeDefaultBannedRights(true)
   return { ...rights, untilDate }
+}
+
+/**
+ * 判断这组 `chatBannedRights` 是否禁止了发言。现代客户端（Telegram Desktop 及其衍生）不再设置旧的
+ * `sendMessages` 位，而是把「禁止发言」拆成 `sendPlain` + 各媒体位（`sendPhotos`、`sendVideos`…），
+ * 只看 `sendMessages` 会把一次禁言当成解除禁言下发。
+ */
+function restrictsSending(rights: tl.RawChatBannedRights): boolean {
+  return Boolean(
+    rights.sendMessages
+    || rights.sendMedia
+    || rights.sendPlain
+    || rights.sendPhotos
+    || rights.sendVideos
+    || rights.sendRoundvideos
+    || rights.sendAudios
+    || rights.sendVoices
+    || rights.sendDocs
+    || rights.sendStickers
+    || rights.sendGifs
+    || rights.sendGames
+    || rights.sendInline
+    || rights.embedLinks
+    || rights.sendPolls,
+  )
 }
 
 function memberMuteKey(conversationId: string, userId: string): string {
