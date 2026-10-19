@@ -1715,10 +1715,23 @@ describe('conversation kinds', () => {
     })
     const bob = await rpc.userTlId('bob')
 
-    await rpc.editChannelBanned({
+    const mute = await rpc.editChannelBanned({
       _: 'channels.editBanned', channel,
       participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
       bannedRights: { _: 'chatBannedRights', sendMessages: true, untilDate: 1_900_000_000 },
+    })
+    const muted = await rpc.getChannelParticipant({
+      _: 'channels.getParticipant', channel,
+      participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
+    })
+    const unmute = await rpc.editChannelBanned({
+      _: 'channels.editBanned', channel,
+      participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
+      bannedRights: { _: 'chatBannedRights', untilDate: 0 },
+    })
+    const unmuted = await rpc.getChannelParticipant({
+      _: 'channels.getParticipant', channel,
+      participant: { _: 'inputPeerUser', userId: bob, accessHash: Long.ZERO },
     })
     await rpc.editChannelBanned({
       _: 'channels.editBanned', channel,
@@ -1727,8 +1740,26 @@ describe('conversation kinds', () => {
     })
     expect(moderationCalls).toEqual([
       { userId: 'bob', action: { type: 'mute', untilDate: 1_900_000_000 } },
+      { userId: 'bob', action: { type: 'unmute' } },
       { userId: 'bob', action: { type: 'kick', rejectAddRequest: true } },
     ])
+    // 平台成员列表不报告禁言，所以桥接自己要把下发的禁言投影回成员状态，否则客户端刷新后又会显示成普通成员。
+    expect(mute).toMatchObject({
+      updates: [{
+        _: 'updateChannelParticipant', channelId: peerTlId('group'), userId: bob,
+        newParticipant: { _: 'channelParticipantBanned' },
+      }],
+    })
+    expect(muted).toMatchObject({
+      participant: {
+        _: 'channelParticipantBanned',
+        bannedRights: { _: 'chatBannedRights', sendMessages: true, untilDate: 1_900_000_000 },
+      },
+    })
+    expect(unmute).toMatchObject({
+      updates: [{ _: 'updateChannelParticipant', newParticipant: { _: 'channelParticipant' } }],
+    })
+    expect(unmuted).toMatchObject({ participant: { _: 'channelParticipant' } })
   })
 
   it('serves channel-scoped message, chat-list, and read RPCs', async () => {
